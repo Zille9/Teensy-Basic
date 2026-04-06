@@ -30,7 +30,7 @@ extern "C" char* sbrk(int incr);
 #include <ctype.h>
 #define BUF_SIZE 256
 char inputBuffer[BUF_SIZE];
-static char *txtpos, *list_line, *tmptxtpos, *dataline;
+static char *txtpos, *list_line;
 bool inQuotes = false;
 
 #include <SPI.h>
@@ -59,15 +59,15 @@ const int chipSelect = BUILTIN_SDCARD;
 #define STR_SIZE 26*27*STR_LEN               //Stringspeicher = Stringlänge 26*40 Zeichen (A..Z * 40 Zeichen)
 
 //static char program[kRamSize];            //Basic-Programmspeicher
-static char Stringtable[STR_SIZE];        //Stringvariablen mit 1 Buchstaben -> 26*40 = 1040 Bytes
+//static char Stringtable[STR_SIZE];        //Stringvariablen mit 1 Buchstaben -> 26*40 = 1040 Bytes
 
-static char *program_start;
-static char *program_end;
+//static char *program_start;
+//static char *program_end;
 static char *current_line;
 typedef short unsigned LINENUM;
-static char *variables_begin;
-static char *stack;
-static char *data_line;
+//static char *variables_begin;
+//static char *stack;
+//static char *data_line;
 
 #define MAX_GOSUB_STACK 25
 struct GosubStack {
@@ -79,10 +79,10 @@ GosubStack gosubStack[MAX_GOSUB_STACK];
 int gosubStackPtr = 0;
 
 
-static char table_index;
-static char keyword_index;
-static char key_command;
-static LINENUM linenum;
+//static char table_index;
+//static char keyword_index;
+//static char key_command;
+//static LINENUM linenum;
 bool jumped = false;
 // Global definieren, damit GOTO und andere darauf zugreifen können
 double lastNumberValue = 0;
@@ -537,9 +537,9 @@ void getln(int m) {
 
 static int inchar()
 {
-  int v;
+  //int v;
   char c;
-  char d;
+    //char d;
 
 
   while (1)
@@ -771,6 +771,7 @@ double factor() {
           // Gibt den freien Heap-Speicher des Teensy zurück
           return (double)get_free_ram();
         }
+      
       // Gruppe der mathematischen Funktionen
       case TOKEN_RND: case TOKEN_SQR: case TOKEN_SIN: case TOKEN_COS:
       case TOKEN_ABS: case TOKEN_INT: case TOKEN_DEG: case TOKEN_RAD:
@@ -780,7 +781,7 @@ double factor() {
         if (*txtpos == '(') txtpos++;
         arg = expression();
         if (*txtpos == ')') txtpos++;
-
+        spaces();
         // Berechnung basierend auf dem Token
         switch (t) {
           case TOKEN_RND: return (double)(random((int)arg) + 1);
@@ -793,7 +794,8 @@ double factor() {
           case TOKEN_DEG: return arg * (180.0 / 3.14159265359);
           case TOKEN_SGN: return (arg > 0) ? 1.0 : (arg < 0 ? -1.0 : 0.0);
           case TOKEN_DREAD : pinMode(int(arg), INPUT_PULLUP); return (double)digitalRead(int(arg));
-
+          
+    
         }
         break;
 
@@ -947,10 +949,10 @@ void doVars() {
   } else {
     for (int i = 0; i < arrayCount; i++) {
       Serial.print("DIM ");
-      
+
       // Hier nutzen wir getVarName mit den gespeicherten Indizes
       Serial.print(getVarName(allArrays[i].vIdx1, allArrays[i].vIdx2));
-      
+
       if (allArrays[i].isString) Serial.print("$");
 
       Serial.print("(");
@@ -1029,60 +1031,6 @@ void cmd_print() {
 
   if (newline) Serial.println();
 }
-/*
-  void cmd_print() {
-  bool newline = true;
-
-  while (*txtpos != '\0' && *txtpos != ':' && *txtpos != '\r' && *txtpos != '\n') {
-    spaces();
-
-    // 1. Strings in Anführungszeichen: PRINT "HALLO"
-    if (*txtpos == '"') {
-      txtpos++; // Start-Anführungszeichen
-      while (*txtpos != '"' && *txtpos != '\0') {
-        Serial.print(*txtpos++);
-      }
-      if (*txtpos == '"') txtpos++;
-      newline = true;
-    }
-    // 2. Ausdrücke (Zahlen, Variablen, Funktionen wie LEN)
-    else {
-      // Wir prüfen vorab, ob es eine String-Variable ist (z.B. A$)
-      // Damit expression() nicht versucht, einen String als Zahl zu berechnen
-      int t = getFunctionToken();
-
-      if (t == TOKEN_VARIABLE && isStringVar) {
-        isStringVar = false;
-        Serial.print(stringVars[vIdx1][vIdx2]);
-      } else {
-        txtpos = lastTokenPos; // Du müsstest in getFunctionToken 'lastTokenPos' speichern.
-
-        double val = expression();
-        if (val == (long)val) Serial.print((long)val);
-        else Serial.print(val, precisionValue);
-      }
-      newline = true;
-    }
-
-    // 3. Trenner-Logik
-    spaces();
-    if (*txtpos == ';') {
-      txtpos++;
-      newline = false;
-    } else if (*txtpos == ',') {
-      txtpos++;
-      Serial.print("\t");
-      newline = false;
-      if (*txtpos == '\0' || *txtpos == ':') break;
-    } else {
-      break;
-    }
-  }
-
-  if (newline) Serial.println();
-  }
-
-*/
 
 void clearAll() {
 
@@ -1200,7 +1148,7 @@ void cmd_read() {
 
     // 2. Datenquelle prüfen (DATA-Pointer)
     if (dataPtr == NULL || *dataPtr == '\0' || *dataPtr == ':') {
-      findNextData(); 
+      findNextData();
     }
     if (dataLineIdx >= lineCount) {
       Serial.println("OUT OF DATA ERROR");
@@ -1214,7 +1162,7 @@ void cmd_read() {
     txtpos = dataPtr;
     spaces();
     if (*txtpos == ',') txtpos++; // Komma in DATA-Zeile überspringen
-    
+
     double val = 0;
     String sVal = "";
 
@@ -1223,7 +1171,7 @@ void cmd_read() {
     } else {
       val = expression();
     }
-    
+
     dataPtr = txtpos; // DATA-Pointer aktualisieren
     txtpos = savedTxtpos; // Haupt-Pointer zurücksetzen
 
@@ -1232,7 +1180,7 @@ void cmd_read() {
     if (*txtpos == '(') {
       // Es ist ein Array! Wir nutzen deine Logik zum Index-Berechnen
       // Wir müssen aber den Wert 'val'/'sVal' dort hineinbekommen.
-      
+
       // Hilfs-Logik: Wir "faken" eine Zuweisung für set_array_value
       // oder wir rufen die Index-Logik direkt auf:
       txtpos++; // '(' überspringen
@@ -1258,15 +1206,15 @@ void cmd_read() {
     // 5. Nächste Variable im READ-Befehl? (READ A, B, OX(1))
     spaces();
     if (*txtpos == ',') {
-      txtpos++; 
+      txtpos++;
     } else {
-      break; 
+      break;
     }
   }
 }
 
 /*
-void cmd_read() {
+  void cmd_read() {
   while (true) {
     // 1. Welche Variable soll befüllt werden? (z.B. READ A)
     if (getCommandToken() != TOKEN_VARIABLE) {
@@ -1317,7 +1265,7 @@ void cmd_read() {
       return; // Ende des READ-Befehls
     }
   }
-}
+  }
 */
 
 void findNextData() {
@@ -1465,6 +1413,21 @@ String parseStringExpression() {
       res = String((char)code);
     }
   }
+  //  SPC(zahl)
+  else if (strncmp(txtpos, "SPC$", 3) == 0) {
+    txtpos += 4;
+    spaces();
+    if (*txtpos == '(') {
+      txtpos++;
+      int code = (int)expression(); // Den ASCII-Wert berechnen
+      spaces();
+      if (*txtpos == ')') txtpos++;
+      for(int i=1; i<int(code); i++) res+=' ';
+      // Den ASCII-Code in einen String mit einem Zeichen umwandeln
+      //res = String((char)code);
+    }
+  }
+  
   // FALL 2: String-Variable oder String-Array (z.B. A$ oder S$(1,2,3))
   else if (isalpha(*txtpos)) {
     lastVarName = toupper(*txtpos);
@@ -1901,7 +1864,7 @@ String get_string_array_value() {
     txtpos++; // Überspringe '('
     int x = (int)expression();
     int y = 0, z = 0;
-    
+
     if (*txtpos == ',') {
       txtpos++;
       y = (int)expression();
@@ -1918,10 +1881,10 @@ String get_string_array_value() {
     }
 
     // Suche mit BEIDEN Indizes nach dem String-Array
-    int i = findArray(v1, v2, true); 
-    
+    int i = findArray(v1, v2, true);
+
     if (i == -1) {
-      Serial.print("STRING ARRAY NOT DIMENSIONED: "); 
+      Serial.print("STRING ARRAY NOT DIMENSIONED: ");
       Serial.println(getVarName(v1, v2)); // Schönerer Error mit vollem Namen
       isRunning = false; return "";
     }
@@ -1944,7 +1907,7 @@ String get_string_array_value() {
 }
 
 double get_array_value_factor() {
-  // Wir nutzen die globalen Indizes vIdx1 und vIdx2, die der Parser 
+  // Wir nutzen die globalen Indizes vIdx1 und vIdx2, die der Parser
   // gerade in factor() oder getCommandToken() ermittelt hat.
   int v1 = vIdx1;
   int v2 = vIdx2;
@@ -1954,7 +1917,7 @@ double get_array_value_factor() {
     txtpos++; // Überspringe '('
     int x = (int)expression();
     int y = 0, z = 0;
-    
+
     if (*txtpos == ',') {
       txtpos++;
       y = (int)expression();
@@ -1972,9 +1935,9 @@ double get_array_value_factor() {
 
     // Suche mit beiden Indizes (v1, v2) nach dem numerischen Array
     int i = findArray(v1, v2, sVar);
-    
+
     if (i == -1) {
-      Serial.print("ARRAY NOT DIMENSIONED: "); 
+      Serial.print("ARRAY NOT DIMENSIONED: ");
       Serial.println(getVarName(v1, v2)); // Zeigt z.B. "OX" statt nur "O"
       isRunning = false; return 0;
     }
@@ -1989,7 +1952,7 @@ double get_array_value_factor() {
       isRunning = false; return 0;
     }
 
-    if (sVar) return 0; 
+    if (sVar) return 0;
     return allArrays[i].numData[idx];
   }
 
@@ -1997,13 +1960,13 @@ double get_array_value_factor() {
   return variables[v1][v2];
 }
 /*
-void set_array_value(int v1, int v2, bool isString) {
+  void set_array_value(int v1, int v2, bool isString) {
   // Wir stehen am Anfang der Klammer '('
   txtpos++; // Überspringe '('
-  
-  int x = (int)expression(); 
+
+  int x = (int)expression();
   int y = 0, z = 0;
-  
+
   if (*txtpos == ',') {
     txtpos++;
     y = (int)expression();
@@ -2012,7 +1975,7 @@ void set_array_value(int v1, int v2, bool isString) {
     txtpos++;
     z = (int)expression();
   }
-  
+
   if (*txtpos == ')') {
     txtpos++;
   } else {
@@ -2022,10 +1985,10 @@ void set_array_value(int v1, int v2, bool isString) {
   spaces();
   if (*txtpos == '=') {
     txtpos++;
-    
+
     // Suche das Array mit beiden Indizes (v1, v2)
     int i = findArray(v1, v2, isString);
-    
+
     if (i == -1) {
       Serial.print("ARRAY NOT DIMENSIONED: ");
       Serial.println(getVarName(v1, v2));
@@ -2050,7 +2013,7 @@ void set_array_value(int v1, int v2, bool isString) {
       allArrays[i].numData[idx] = expression();
     }
   }
-}
+  }
 */
 int findArray(int v1, int v2, bool isString) {
   for (int i = 0; i < arrayCount; i++) {
@@ -2074,8 +2037,8 @@ void cmd_dim() {
   do {
     spaces();
     if (!isalpha(*txtpos)) {
-      isRunning = false; 
-      return; 
+      isRunning = false;
+      return;
     }
 
     // 1. Namen und IDs holen (z.B. O und X)
@@ -2095,10 +2058,13 @@ void cmd_dim() {
     }
 
     // 2. Dimensionen in Klammern lesen
-    if (*txtpos != '(') { isRunning = false; return; }
+    if (*txtpos != '(') {
+      isRunning = false;
+      return;
+    }
     txtpos++;
 
-    int d1 = (int)expression(); 
+    int d1 = (int)expression();
     int d2 = 0, d3 = 0;
 
     if (*txtpos == ',') {
@@ -2141,7 +2107,7 @@ void cmd_dim() {
 
     spaces();
     // --- DER SCHLÜSSEL: Wenn ein Komma folgt, loope weiter ---
-  } while (*txtpos == ',' && (txtpos++)); 
+  } while (*txtpos == ',' && (txtpos++));
 }
 /*
   void cmd_dim() {
@@ -2215,7 +2181,7 @@ void cmd_dim() {
   }
 */
 /*
-void cmd_assignment() {
+  void cmd_assignment() {
   char varNameChar = lastVarName;
   int targetV1 = vIdx1;
   int targetV2 = vIdx2;
@@ -2280,7 +2246,7 @@ void cmd_assignment() {
   else {
     syntaxerror("SYNTAX ERROR IN ASSIGNMENT");
   }
-}
+  }
 
 */
 void cmd_assignment() {
@@ -2315,19 +2281,19 @@ void cmd_assignment() {
     spaces();
     if (*txtpos == '=') {
       txtpos++;
-      
+
       // Suche das Array mit beiden Indizes (wichtig für OX, OY etc.)
-      int i = findArray(targetV1, targetV2, sVar); 
-      
+      int i = findArray(targetV1, targetV2, sVar);
+
       if (i == -1) {
-        Serial.print("ARRAY NOT DIMENSIONED: "); 
+        Serial.print("ARRAY NOT DIMENSIONED: ");
         Serial.println(getVarName(targetV1, targetV2)); // Zeigt jetzt "OX" statt nur "O"
         isRunning = false; return;
       }
 
       int idx = x + (y * allArrays[i].dimX) + (z * allArrays[i].dimX * allArrays[i].dimY);
       int totalSize = allArrays[i].dimX * allArrays[i].dimY * allArrays[i].dimZ;
-      
+
       if (idx >= totalSize || idx < 0) {
         syntaxerror("ARRAY INDEX OUT OF BOUNDS"); return;
       }
