@@ -10,34 +10,120 @@
 //                                                                                                                                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#define BasicVersion "1.0"
-#define BuiltTime "02.04.2026"
+#define BasicVersion "1.5"
+#define BuiltTime "15.04.2026"
 
 //Logbuch
+//Version 1.5 15.04.2026                   -Befehl RECT nach anfänglichen Schwierigkeiten eingebunden -> RECT x,y,w,h,fill
+//                                         -Befehl LINE eingebunden -> LINE x,y,xx,yy
+//                                         -Befehl CIRC eingebunden -> CIRC x,y,w,h,fill
+//                                         -die Grafikbefehle führen noch zu Abstürzen wenn bsp.weise eine neue Basic-datei geladen werden soll - Screenpuffer ?
+//                                         -VGA-Funktionalität eingebunden, jetzt kanns richtig losgehen - kleiner Fehler in der Pinbeschaltung für VGA behoben
+//                                         -203976 Zeilen/sek. (Fastest)
+//
+//Version 1.4 12.04.2026                   -USB-Tastatur eingebunden, die Texteingaben erfolgen ab sofort nicht mehr über seriell sondern Tastatur
+//                                         -Code soweit auf Tastatur umgebaut
+//                                         -VGA-Funktionalität eingebunden, jetzt kanns richtig losgehen - kleiner Fehler in der Pinbeschaltung für VGA behoben
+//                                         -ein Rot-Pin war statt auf Pin2 auf Pin1 dadurch gab es Farbverfälschungen
+//                                         -Anpassung an die Tastenabfrage OnPress - die Tasten <> | [ ] { } und ^ waren nicht erreichbar
+//                                         -Fehler in cmd_dim behoben -> AX=10 Dim S(AX) führte dazu das AX dimensioniert wurde und nicht S - die Variablen-Indexe wurden vorher nicht gesichert
+//                                         -Syntax-Hervorhebung eingebaut, RUN-Befehl erweitert -> RUN"Filename" oder String
+//
+//Version 1.3 10.04.2026                   -ENDIF als TOKEN und in der IF-THEN-ELSE Ausführung entfernt, das hat den Basic-Interpreter extrem ausgebremst
+//                                         -durch die Rückkehr zum normalen IF-THEN-ELSE ist die Geschwindigkeit mehr als doppelt so hoch
+//                                         -DEFN und FN mit bis zu 4 Parametern eingebaut als Variablen sind aber nur einbuchstabige Variablen erlaubt!
+//                                         -242274 Zeilen/sek. (Optimize: Fastest)
+//
+//Version 1.2 08.04.2026                   -USB-Keyboard-Treiber eingebaut, muss aber noch am Teensy angesteckt werden (fehlendes Kabel)
+//                                         -interne RTC aktiviert -> Befehle STIME h,m,s,d,m,y zum stellen GTIME(1...6) zum auslesen
+//                                         -TIME$ Rückgabe Uhrzeit als String (hh:mm:ss), Date$ Rückgabe Datum als String (dd.mm.yyyy)
+//                                         -90792 Zeilen/sek.
+//
+//Version 1.1 06.04.2026                   -solides Grundgerüst mit diversen Befehlen Arrays (Zahlen/Strings), SD-Card Zugriff
+//                                         -erste Programme vom ESP32+Basic funktionieren, zusätzlich integrierte Befehle IF-THEN-ELSE-ENDIF
+//                                         -sowie WHILE-WEND, diverse Stringfunktionen Left$,Right$,Mid$,STR$,CHR$,SPC
+//                                         -TIMER-Befehl zur Ermittlung von Benchmark-Werten, als nächstes werden MODULO und die NOT (!) Funktion eingebaut
+//                                         -ausserdem soll die Verarbeitung von BIN und HEX hinzugefügt werden -> erledigt
+//                                         -91072 Zeilen/sek.
+//
+//
 //Version 1.0 02.04.2026                   -erstes Grundgerüst erstellt mit den Befehlen RUN,LIST,FOR..NEXT..STEP,NEW,PRINT,PRZ,VARS
 //                                         -Ausgabe noch über serielle Konsole, da der TEENSY noch nackig auf dem Tisch liegt
 //                                         -Grundrechenarten integriert, Variablen mit 2 Buchstaben + 10 Zahlen (insgesamt 962 A...Z9)
 //                                         -SIN,COS,ABS,SQR und INT hinzugefügt
 //                                         -nächste Funktionalität wird SD-Card-Zugriff sein, um Programme auf der SD-Karte zu speichern und zu laden
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
-
-
-#include <malloc.h>
-extern "C" char* sbrk(int incr);
 
 #include <Arduino.h>
 #include <ctype.h>
+#include <string.h>
 #define BUF_SIZE 256
 char inputBuffer[BUF_SIZE];
-static char *txtpos, *list_line;
+static char *txtpos, *list_line;//, *tmptxtpos, *dataline;
 bool inQuotes = false;
+
+extern "C" uint8_t external_psram_size;
+
+#include <VGA_t4.h>
+VGA_T4 vga;
+int vga_cursor_x = 0;
+int vga_cursor_y = 0;
+vga_pixel vga_fg = VGA_RGB(255, 255, 255); // Weiß
+vga_pixel vga_bg = VGA_RGB(0, 0, 170);     // C64-Blau
+static int fb_width, fb_height;
+int currentIndent = 0;
+// Konfiguration passend zu deinem C64-Beispiel
+const int fontH = 8;
+const int MAX_C = 40;       //Anzahl Textspalten
+const int MAX_R = 30;       //Anzahl Textzeilen
+char screenBuffer[MAX_R][MAX_C]; // Neuer Buffer: 30 Zeilen à 40 Zeichen
+uint8_t colorBuffer_F[MAX_R][MAX_C];  // Speichert die Vordergrundfarbe (8-Bit VGA)
+uint8_t colorBuffer_H[MAX_R][MAX_C];  // Speichert die Hintergrundfarbe (8-Bit VGA)
+bool cursor_on_off = true;
+#define BLUE       11
+#define LIGHT_BLUE 83
+#define WHITE      255
+#define YELLOW     252
+#define MAGENTA    163
+#define CYAN       127
+#define GREEN      24
+#define RED        196
+#define GRAY       114
+
+uint8_t F_COL[] {0, 136, 255};
+uint8_t H_COL[] {0, 0, 255};
+
+// Aktuelle Position (global)
+int x_pos = 0;
+int y_pos = 0;
+
+struct Params {
+  int val[10];
+};
+
+// TRON/TROFF - Marker
+bool tron_marker = false;
+
+#include <stdarg.h>   //für printf
+#include <TimeLib.h>
 
 #include <SPI.h>
 #include <SD.h>
 
 // Für Teensy 4.1/4.0/3.6 Onboard-SD-Slot:
 const int chipSelect = BUILTIN_SDCARD;
+
+#include "USBHost_t36.h"                    //USB-Keyboard-treiber
+USBHost myusb;
+USBHub hub1(myusb); // Optional, falls ein Hub verwendet wird
+USBHIDParser hid1(myusb); // Der "Dolmetscher" für moderne Tastaturen
+KeyboardController keyboard1(myusb);
+// Oben im Sketch bei den globalen Variablen:
+volatile int lastUsbChar = -1;
+
+uint8_t keyboard_modifiers = 0;  // try to keep a reasonable value
+uint8_t keyboard_last_leds = 0;
 
 // ASCII Characters
 #define CR  '\r'
@@ -52,22 +138,9 @@ const int chipSelect = BUILTIN_SDCARD;
 #define CTRLH 0x08
 #define CTRLS 0x13
 
-#define RAMEND 0xFFFF
-#define kRamSize  RAMEND
 
-#define STR_LEN 40
-#define STR_SIZE 26*27*STR_LEN               //Stringspeicher = Stringlänge 26*40 Zeichen (A..Z * 40 Zeichen)
-
-//static char program[kRamSize];            //Basic-Programmspeicher
-//static char Stringtable[STR_SIZE];        //Stringvariablen mit 1 Buchstaben -> 26*40 = 1040 Bytes
-
-//static char *program_start;
-//static char *program_end;
 static char *current_line;
 typedef short unsigned LINENUM;
-//static char *variables_begin;
-//static char *stack;
-//static char *data_line;
 
 #define MAX_GOSUB_STACK 25
 struct GosubStack {
@@ -78,11 +151,7 @@ struct GosubStack {
 GosubStack gosubStack[MAX_GOSUB_STACK];
 int gosubStackPtr = 0;
 
-
-//static char table_index;
-//static char keyword_index;
-//static char key_command;
-//static LINENUM linenum;
+bool break_marker = false;
 bool jumped = false;
 // Global definieren, damit GOTO und andere darauf zugreifen können
 double lastNumberValue = 0;
@@ -103,6 +172,7 @@ char lastVarName;  // Speichert den Buchstaben der aktuellen Variable (A-Z)
 String stringVars[26][37];
 bool isStringVar = false; // Globales Flag
 char lastStringValue[80];
+#define MAX_STRING_LEN 64
 
 // Arrays 3 Dimensionen Numerisch und String
 #define MAX_ARRAYS 40
@@ -145,10 +215,20 @@ int forStackPtr = 0;
 
 int currentLineIndex = 0; // Index im program[] Array
 bool isRunning = false;   // Status-Flag
+bool last_if_result = false;  //IF-THEN-ELSE-FLAG
+
+int printMode = 0; // 0=Normal, 16=HEX, 2=BIN, 8=OCT  - Print-Modi
 
 
 
+struct UserFunction {
+  char name;            // Name der Funktion (A-Z)
+  char params[4];       // Die Namen der 4 Variablen (z.B. W, X, Y, Z)
+  int paramCount;       // Wie viele Parameter wurden tatsächlich definiert?
+  const char* formula;  // Zeiger auf den Ausdruck nach dem '='
+};
 
+UserFunction function[26]; // Für A-Z
 
 //---------------------------------- Fehlermeldungen des Interpreters -----------------------------------------------------------------------------
 
@@ -187,7 +267,8 @@ static const char dirnotfound[]      PROGMEM = "DIR not found !";               
 static const char extension_error[]  PROGMEM = "invalid File-Extension !";      //27
 static const char stringtolong[]     PROGMEM = "String to long!";               //28
 static const char wronglinenr[]      PROGMEM = "Wrong Line-Number!";            //29
-
+static const char illegalvariable[]  PROGMEM = "Illegal Variable Name";         //30
+static const char whilewendmsg[]     PROGMEM = "While-Wend-Error!";             //31
 
 int dataLineIdx = 0;   // In welcher Zeile im program[] Array sind wir?
 char* dataPtr = NULL;  // Wo genau in dieser Zeile steht der nächste Wert?
@@ -196,6 +277,7 @@ enum {
   TOKEN_ERROR,
   TOKEN_PRINT,            //erster Basic-Befehl
   TOKEN_GOTO,
+  TOKEN_PRZ,
   TOKEN_LIST,
   TOKEN_RUN,
   TOKEN_VARIABLE,         // A-Z
@@ -206,7 +288,6 @@ enum {
   TOKEN_TO,
   TOKEN_NEXT,
   TOKEN_STEP,
-  TOKEN_PRZ,
   TOKEN_VARS,
   TOKEN_IF,
   TOKEN_THEN,
@@ -225,14 +306,31 @@ enum {
   TOKEN_GOSUB,
   TOKEN_RETURN,
   TOKEN_ELSE,
-  TOKEN_ENDIF,
   TOKEN_WHILE,
   TOKEN_WEND,
   TOKEN_RENAME,
   TOKEN_COPY,
   TOKEN_DWRITE,
   TOKEN_PAUSE,
-  TOKEN_MEM,       //letzter Basic-Befehl
+  TOKEN_MEM,
+  TOKEN_ON,
+  TOKEN_STIME,
+  TOKEN_DUMP,
+  TOKEN_DEFN,
+  TOKEN_CLS,
+  TOKEN_COL,
+  TOKEN_PSET,
+  TOKEN_TAB,       //TOKEN nur für Listausgabe relevant
+  TOKEN_AT,        //TOKEN nur für Listausgabe relevant
+  TOKEN_TRON,
+  TOKEN_TROFF,
+  TOKEN_PIC,
+  TOKEN_LINE,
+  TOKEN_RECT,
+  TOKEN_CIRC,
+  TOKEN_PEN,
+  TOKEN_CUR,
+  TOKEN_EDIT,      //letzter Basic-Befehl
   TOKEN_RND,       //erster Funktions-Befehl
   TOKEN_SQR,
   TOKEN_SIN,
@@ -247,7 +345,23 @@ enum {
   TOKEN_ASC,
   TOKEN_VAL,
   TOKEN_DREAD,
-  TOKEN_FREEMEM,      //letzter Funktions-Befehl
+  TOKEN_FRE,
+  TOKEN_TIMER,
+  TOKEN_LEFT,
+  TOKEN_RIGHT,
+  TOKEN_MID,
+  TOKEN_SPC,
+  TOKEN_STR,
+  TOKEN_CHR,
+  TOKEN_BIN,
+  TOKEN_HEX,
+  TOKEN_OCT,
+  TOKEN_GTIME,
+  TOKEN_TIME,
+  TOKEN_DATE,
+  TOKEN_FN,
+  TOKEN_INKEY,
+  TOKEN_STRING,      //letzter Funktions-Befehl
   TOKEN_END
 };
 
@@ -259,6 +373,7 @@ struct Keyword {
 Keyword commands[] = {
   {"PRINT", TOKEN_PRINT},
   {"GOTO", TOKEN_GOTO},
+  {"PRZ", TOKEN_PRZ},
   {"LIST", TOKEN_LIST},
   {"RUN",   TOKEN_RUN},
   {"NEW",  TOKEN_NEW},
@@ -284,7 +399,6 @@ Keyword commands[] = {
   {"GOSUB", TOKEN_GOSUB},
   {"RETURN", TOKEN_RETURN},
   {"ELSE", TOKEN_ELSE},
-  {"ENDIF", TOKEN_ENDIF},
   {"WHILE", TOKEN_WHILE},
   {"WEND",  TOKEN_WEND},
   {"RENAME", TOKEN_RENAME},
@@ -292,18 +406,35 @@ Keyword commands[] = {
   {"DWRITE", TOKEN_DWRITE},
   {"PAUSE", TOKEN_PAUSE},
   {"MEM", TOKEN_MEM},
+  {"ON", TOKEN_ON},
+  {"STIME", TOKEN_STIME},
+  {"DUMP", TOKEN_DUMP},
+  {"DEFN", TOKEN_DEFN},
+  {"CLS", TOKEN_CLS},
+  {"COL", TOKEN_COL},
+  {"PSET", TOKEN_PSET},
+  {"TAB", TOKEN_TAB},
+  {"AT", TOKEN_AT},
+  {"TRON", TOKEN_TRON},
+  {"TROFF", TOKEN_TROFF},
+  {"PIC", TOKEN_PIC},
+  {"LINE", TOKEN_LINE},
+  {"RECT", TOKEN_RECT},
+  {"CIRC", TOKEN_CIRC},
+  {"PEN", TOKEN_PEN},
+  {"CUR", TOKEN_CUR},
+  {"EDIT", TOKEN_EDIT},
   {NULL, 0}
 };
 
 Keyword functions[] = {
   {"RND", TOKEN_RND},
   {"SQR", TOKEN_SQR},
-  {"PRZ",   TOKEN_PRZ},
   {"SIN", TOKEN_SIN},
   {"COS", TOKEN_COS},
   {"ABS", TOKEN_ABS},
   {"INT", TOKEN_INT},
-  {"PI", TOKEN_PI},
+  {"PI",  TOKEN_PI},
   {"DEG", TOKEN_DEG},
   {"RAD", TOKEN_RAD},
   {"SGN", TOKEN_SGN},
@@ -311,12 +442,28 @@ Keyword functions[] = {
   {"ASC", TOKEN_ASC},
   {"VAL", TOKEN_VAL},
   {"DREAD", TOKEN_DREAD},
-  {"FREEMEM", TOKEN_FREEMEM},
+  {"FRE", TOKEN_FRE},
+  {"TIMER", TOKEN_TIMER},
+  {"LEFT$", TOKEN_LEFT},
+  {"RIGHT$", TOKEN_RIGHT},
+  {"MID$", TOKEN_MID},
+  {"SPC", TOKEN_SPC},
+  {"STR$", TOKEN_STR},
+  {"CHR$", TOKEN_CHR},
+  {"BIN", TOKEN_BIN},
+  {"HEX", TOKEN_HEX},
+  {"OCT", TOKEN_OCT},
+  {"GTIME", TOKEN_GTIME},
+  {"TIME$", TOKEN_TIME},
+  {"DATE$", TOKEN_DATE},
+  {"FN", TOKEN_FN},
+  {"INKEY", TOKEN_INKEY},
+  {"STRING$", TOKEN_STRING},
   {NULL, 0}
 };
 
 
-#define MAX_LINES 1000
+#define MAX_LINES 1560
 #define LINE_LEN 80
 
 struct BasicLine {
@@ -327,30 +474,337 @@ struct BasicLine {
 BasicLine program[MAX_LINES];
 int lineCount = 0;                                                                      // Wie viele Zeilen aktuell im Speicher sind
 
+#define BIN 2
+#define OCT 8
+#define DEC 10
+#define HEX 16
+
+// vga8ToRGB(meinVgaWert, r, g, b);
+void fbcolor(uint8_t vgaVal, bool vh) {
+  // Rot: Die obersten 3 Bits isolieren
+  uint8_t  r = (vgaVal & 0xE0) | ((vgaVal & 0xE0) >> 3) | ((vgaVal & 0xE0) >> 6);
+  uint8_t  g = ((vgaVal & 0x1C) << 3) | (vgaVal & 0x1C) | ((vgaVal & 0x1C) >> 3);
+  uint8_t  b = ((vgaVal & 0x03) << 6) | ((vgaVal & 0x03) << 4) | ((vgaVal & 0x03) << 2) | (vgaVal & 0x03);
+  if (vh) {
+    H_COL[0] = r;
+    H_COL[1] = g;
+    H_COL[2] = b;
+    return;
+  }
+  else
+  {
+    F_COL[0] = r;
+    F_COL[1] = g;
+    F_COL[2] = b;
+  }
+  //r = (vgaVal & 0xE0);          // 0b11100000
+  // Grün: Die mittleren 3 Bits isolieren und 3 Stellen nach links schieben
+  //g = (vgaVal & 0x1C) << 3;     // 0b00011100 -> 0b11100000
+  // Blau: Die untersten 2 Bits isolieren und 6 Stellen nach links schieben
+  //b = (vgaVal & 0x03) << 6;     // 0b00000011 -> 0b11000000
+}
+
+uint8_t rgbToVGA(uint8_t r, uint8_t g, uint8_t b) {
+  // Rot von 0-255 auf 0-7 bringen (3 Bit)
+  // Grün von 0-255 auf 0-7 bringen (3 Bit)
+  // Blau von 0-255 auf 0-3 bringen (2 Bit)
+  return ( (r & 0xE0) | ((g & 0xE0) >> 3) | (b >> 6) );
+}
+
+void cmd_color() {
+  uint8_t v, h;
+  spaces();
+  v = expression();
+  if (v > 255) v = 255;
+  fbcolor(v, 0);
+  spaces();
+  if (*txtpos == ',') {
+    txtpos++;
+    h = expression();
+    if (h > 255) h = 255;
+    fbcolor(h, 1);
+  }
+  yield();
+  return;
+
+}
+
+void setpos(int x, int y)
+{
+  x_pos = x;
+  y_pos = y;
+}
+
+
+// Für Texte (Strings)
+void print(const char *str) {
+  while (*str) outchar(*str++);
+}
+
+// Für einzelne Zeichen
+void print(char c) {
+  outchar(c);
+}
+
+// Für ganze Zahlen (int)
+void print(int n) {
+  char buf[12];
+  itoa(n, buf, 10);
+  print(buf);
+}
+
+// Für Fließkommazahlen (float/double) - wichtig für BASIC
+void print(double n) {
+  char buf[20];
+  // n, Vorkommastellen, Nachkommastellen, Puffer
+  dtostrf(n, 4, 2, buf);
+  print(buf);
+}
+void print(long n) {
+  print(n, 10);
+}
+void println(long n) {
+  print(n, 10);
+  outchar(13);
+}
+void println(const char *str) {
+  print(str);
+  outchar(13);
+}
+void println(int n)          {
+  print(n);
+  outchar(13);
+}
+void println(double n)       {
+  print(n);
+  outchar(13);
+}
+void println()               {
+  outchar(13);
+}
+void print(String s)         {
+  print(s.c_str());
+}
+void println(String s)       {
+  println(s.c_str());
+}
+
+void print(long n, int base) {
+  char buf[33]; // Genug Platz für 32 Bits (BIN) + Null-Terminator
+  ltoa(n, buf, base);
+
+  // Bei Hexadezimal sieht es in Großbuchstaben (C64-Style) besser aus
+  if (base == 16) {
+    for (int i = 0; buf[i]; i++) buf[i] = toupper(buf[i]);
+  }
+
+  print(buf); // Ruft deine print(const char*) auf
+}
+
+// Und die passende println-Version
+void println(long n, int base) {
+  print(n, base);
+  outchar(13);
+}
+
+void print(uint64_t n) {
+  char buf[21]; // Genug Platz für die größte 64-Bit Zahl (20 Stellen + \0)
+
+  // Da der Teensy ltoa/ultoa oft nur bis 32 Bit unterstützt,
+  // nutzen wir sprintf für echte 64-Bit Unterstützung:
+  sprintf(buf, "%llu", n);
+  print(buf);
+}
+
+void println(uint64_t n) {
+  print(n);
+  outchar(13);
+}
+void printReady() {
+  outchar(13); // Sicherstellen, dass wir in einer neuen Zeile ganz links starten
+  println("READY.");
+}
+
+void vprintf(const char *format, ...) {
+  char buf[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+
+  print(buf); // Nutzt deine bestehende VGA-print Funktion
+}
+
+void cmd_cls() {
+  // 1. Die aktuellen Farben für das Leeren nehmen
+  uint8_t bg = getVGA(H_COL);
+  uint8_t fg = getVGA(F_COL);
+
+  // 2. Alle Buffer im RAM leeren
+  for (int r = 0; r < MAX_R; r++) {
+    for (int c = 0; c < MAX_C; c++) {
+      screenBuffer[r][c] = ' ';   // Alles auf Leerzeichen
+      colorBuffer_F[r][c] = fg;   // Aktuelle Vordergrundfarbe speichern
+      colorBuffer_H[r][c] = bg;   // Aktuelle Hintergrundfarbe speichern
+    }
+  }
+  x_pos = 0;
+  y_pos = 0;
+  vga.clear(bg);
+}
+
+uint8_t getVGA(uint8_t col[]) {
+  return VGA_RGB(col[0], col[1], col[2]);
+}
+
+
+void drawCursor(bool state) {
+  int px = x_pos * 8;
+  int py = y_pos * 8;
+
+  if (state) {
+    // Cursor an: Invertiertes Leerzeichen (Blau auf Hellblau)
+    vga.drawText(px, py, " ", getVGA(H_COL), getVGA(F_COL), false);
+  } else {
+    // Cursor aus: Zeichen aus dem Buffer wiederherstellen
+    char c = screenBuffer[y_pos][x_pos];
+    static char buf[2] = {0, 0};
+    buf[0] = (c <= 32) ? ' ' : c; // Leerzeichen, falls Buffer leer
+    buf[1] = '\0';
+    vga.drawText(px, py, buf, getVGA(F_COL), getVGA(H_COL), false);
+  }
+}
+
+
+
 
 static void outchar(char c) {
-  Serial.write(c);
+  drawCursor(false);
+  if (x_pos < 0) x_pos = 0;
+  if (y_pos < 0) y_pos = 0;
+
+  if (c == 13) {
+    x_pos = 0;
+    y_pos++;
+    checkScroll();
+    return;
+  }
+  if (c == 10) return;
+
+  if (c == '\b') {            //Pfeiltaste zurück
+    if (x_pos > 0) x_pos--;   // KEIN Leerzeichen schreiben!
+    return;
+  }
+  if (c == 8 || c == 127 ) {
+    if (x_pos > 0) {
+      x_pos--;
+      screenBuffer[y_pos][x_pos] = ' ';
+      // beim Backspace die aktuelle Hintergrundfarbe im Buffer "leeren"
+      colorBuffer_F[y_pos][x_pos] = getVGA(F_COL);
+      colorBuffer_H[y_pos][x_pos] = getVGA(H_COL);
+      vga.drawText(x_pos * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);
+    }
+    return;
+  }
+
+  if (x_pos >= MAX_C) {
+    x_pos = 0;
+    y_pos++;
+    checkScroll();
+  }
+
+  if (y_pos < MAX_R) {
+    // 1. Zeichen UND Farben im Buffer speichern
+    screenBuffer[y_pos][x_pos] = c;
+    colorBuffer_F[y_pos][x_pos] = getVGA(F_COL); // Aktuelle Vordergrundfarbe merken
+    colorBuffer_H[y_pos][x_pos] = getVGA(H_COL); // Aktuelle Hintergrundfarbe merken
+
+    // 2. Auf den Bildschirm zeichnen
+    static char b[2] = {0, 0};
+    b[0] = c;
+    b[1] = '\0';
+
+    vga.drawText(x_pos * 8, y_pos * 8, b, getVGA(F_COL), getVGA(H_COL), false);
+
+    x_pos++;
+    drawCursor(cursor_on_off);
+  }
 }
+
+void redrawScreen() {
+  for (int r = 0; r < MAX_R; r++) {
+    for (int c = 0; c < MAX_C; c++) {
+      char ch = screenBuffer[r][c];
+      // Wir zeichnen ALLES, auch Leerzeichen, damit die Hintergrundfarbe stimmt
+      static char b[2] = {0, 0};
+      b[0] = (ch < 32) ? ' ' : ch;
+
+      // HIER liegt oft der Fehler: Du MUSST die gespeicherten Farben nehmen!
+      uint8_t fg = colorBuffer_F[r][c];
+      uint8_t bg = colorBuffer_H[r][c];
+
+      vga.drawText(c * 8, r * 8, b, fg, bg, false);
+    }
+  }
+}
+
+void checkScroll() {
+  int fontH = 8;
+  if (y_pos >= MAX_R) {
+    // 1. Buffer schieben (ASCII und beide Farben)
+    for (int r = 1; r < MAX_R; r++) {
+      memcpy(screenBuffer[r - 1], screenBuffer[r], MAX_C);
+      memcpy(colorBuffer_F[r - 1], colorBuffer_F[r], MAX_C);
+      memcpy(colorBuffer_H[r - 1], colorBuffer_H[r], MAX_C);
+    }
+
+    // 2. Unterste Zeile leeren (Buffer)
+    y_pos = MAX_R - 1;
+    uint8_t current_fg = getVGA(F_COL);
+    uint8_t current_bg = getVGA(H_COL);
+    for (int c = 0; c < MAX_C; c++) {
+      screenBuffer[y_pos][c] = ' ';
+      colorBuffer_F[y_pos][c] = current_fg;
+      colorBuffer_H[y_pos][c] = current_bg;
+    }
+
+    // 3. Den Monitor aktualisieren
+    redrawScreen();
+  }
+}
+
+
+
 
 static void line_terminator()
 {
-  outchar(CR);
-  outchar(NL);
+  outchar(13);
+  //outchar(NL);
 }
 
-extern "C" uint32_t _estack;     // Ende des Stacks
-extern "C" uint32_t _sbreak;    // Aktueller Heap-Start
-extern "C" uint32_t _ebss;      // Ende der statischen Variablen
+#include <malloc.h>
 
-uint32_t get_free_ram() {
-  uint32_t stack_ptr;
-  // Wir nehmen die aktuelle Position des Stack-Pointers
-  __asm__ volatile ("mov %0, sp" : "=r" (stack_ptr));
+extern "C" char* sbrk(int incr);
 
-  // Der freie Speicher liegt zwischen dem aktuellen Heap-Ende und dem Stack
-  char *heap_end = (char *)sbrk(0);
-  return (uint32_t)stack_ptr - (uint32_t)heap_end;
+double get_free_ram() {
+  // 1. Hole Statistiken vom Speicher-Manager
+  struct mallinfo mi = mallinfo();
+
+  // 2. Berechne den freien Platz im bereits angeforderten Heap-Block
+  // mi.fordblks sind die "Löcher" im Heap (freigegebener Speicher)
+  uint32_t free_in_heap = mi.fordblks;
+
+  // 3. Berechne den noch nicht angeforderten Speicher zwischen Heap und Stack
+  // Auf dem Teensy 4.1 liegt der Heap im 512KB großen RAM2 (OCRAM)
+  uint32_t total_ram2 = 512 * 1024;
+  uint32_t used_ram2 = mi.uordblks; // Aktuell belegter Heap
+
+  // Gesamter freier Platz im System-RAM
+  double total_free = (double)(total_ram2 - used_ram2);
+
+  return total_free;
 }
+
 
 void parseVarName() {
 
@@ -359,7 +813,7 @@ void parseVarName() {
   if (*txtpos >= 'A' && *txtpos <= 'Z') {                                               // 1. Zeichen (Muss A-Z sein)
     vIdx1 = *txtpos++ - 'A';
   } else {
-    Serial.println("SYNTAX ERROR: Illegal Variable Name");
+    syntaxerror(illegalvariable);
     isRunning = false; return;
   }
   if (*txtpos >= 'A' && *txtpos <= 'Z') {                                               // 2. Zeichen (Optional: A-Z oder 0-9)
@@ -400,19 +854,12 @@ int getCommandToken() {
 
   spaces();
   int t = scanKeyword(commands);
-  /*
-    // DEBUG:
-    if (t != -1) {
-      Serial.print("Keyword gefunden, Token ID: ");
-      Serial.println(t);
-    }
-  */
 
   if (t != -1) return t;
 
   // In getCommandToken oder der Variablen-Logik:
   if (isalpha(*txtpos)) {
-    lastVarName = toupper(*txtpos);
+    lastVarName = *txtpos;
     isStringVar = false;
     vIdx1 = *txtpos - 'A';
     vIdx2 = 0;
@@ -455,7 +902,15 @@ int getFunctionToken() {
 
   // 3. DANN: String-Literale "..."
   if (*txtpos == '"') {
-    // (Deine Logik zum Kopieren in lastStringValue)
+    txtpos++; // Überspringe das öffnende "
+    int len = 0;
+
+    // Kopiere den Inhalt in einen Puffer (z.B. lastStringValue), bis das schließende " kommt
+    while (*txtpos != '"' && *txtpos != '\0' && len < MAX_STRING_LEN - 1) {
+      lastStringValue[len++] = *txtpos++;
+    }
+    lastStringValue[len] = '\0'; // Null-Terminator für den C-String
+
     return TOKEN_STRING_LITERAL;
   }
 
@@ -482,89 +937,59 @@ int getFunctionToken() {
   return TOKEN_ERROR;
 }
 
-void getln(int m) {
-  int index = 0;
-  char c;
-  inQuotes = false;
-  if (m)
-  {
-    printmsg("READY.", 1);
+void getln(int showReady) {
+  if (showReady) {
+    if (x_pos != 0) outchar(13);
+    printmsg("READY.", true);
   }
 
-  while (true) {
-    c = inchar();                                                                         //Input-Funktion
+  int cursor = 0;
+  int length = 0;
+  memset(inputBuffer, 0, BUF_SIZE);
 
-    switch (c) {
-      // 1. Eingabe Ende (Line Feed / Carriage Return)
-      case '\r':
-      case '\n':
-        inputBuffer[index] = '\0';
-        txtpos = inputBuffer;
-        Serial.println();
-        return;
+  if (editLine(inputBuffer, BUF_SIZE, cursor, length)) {
 
-      // 2. Backspace / Delete
-      case 8:
-      case 127:
-        if (index > 0) {
-          index--;
-          if (inputBuffer[index] == '"') inQuotes = !inQuotes;                            // Status flippen, falls ein Anführungszeichen gelöscht wurde
-          Serial.print("\b \b");
-        }
-        break;
+    txtpos = inputBuffer;                                           // Wenn Enter gedrückt wurde: Text an txtpos übergeben
 
-
-      case '"':
-        inQuotes = !inQuotes;
-        // Speichern ohne toupper
-        if (index < BUF_SIZE - 1) {
-          inputBuffer[index++] = c;
-          Serial.print(c);
-        }
-        break;
-
-      default:
-        if (index < BUF_SIZE - 1) {
-          if (!inQuotes) c = toupper(c); // Nur außerhalb von "" umwandeln
-          inputBuffer[index++] = c;
-          Serial.print(c);
-        }
-        break;
-    }
-    delayMicroseconds(100);
-  }
-}
-
-static int inchar()
-{
-  //int v;
-  char c;
-    //char d;
-
-
-  while (1)
-  {
-    if (Serial.available()) {
-      c = Serial.read();          //Standard-Tasteneingabe
-
-      switch (c) {
-
-        case 0x23: //notdürftig auf # geändert //0x03:       // ESC        -> BREAK
-          isRunning = false;
-          break;
-
-        default:
-
-          break;
+    bool q = false;
+    for (int i = 0; i < length; i++) {
+      if (inputBuffer[i] == '"') q = !q;
+      if (!q && inputBuffer[i] >= 'a' && inputBuffer[i] <= 'z') {   // Alles außerhalb von Anführungszeichen groß machen
+        inputBuffer[i] -= 32;
       }
-
-      return c;
-    }//if(Terminal.available)
-
-
-  }//while
-
+    }
+  } else {
+    // Bei ESC: Zeile leeren
+    inputBuffer[0] = '\0';
+    txtpos = inputBuffer;
+    println("Break!");
+  }
 }
+
+static int inchar() {
+  uint32_t lastBlink = 0;
+  bool cursor_state = true;
+
+  while (1) {
+    myusb.Task();
+    if (cursor_on_off) {
+      if (millis() - lastBlink > 300) {
+        cursor_state = !cursor_state;
+        drawCursor(cursor_state);
+        lastBlink = millis();
+      }
+    }
+    if (lastUsbChar != -1) {
+      int c = lastUsbChar;
+      lastUsbChar = -1;
+      drawCursor(false); // Cursor nur löschen
+      // Hier KEIN outchar(c)!
+      return c;
+    }
+    yield();
+  }
+}
+
 
 static void syntaxerror(const char *msg)
 {
@@ -574,7 +999,7 @@ static void syntaxerror(const char *msg)
     char tmp = *txtpos;           //Position merken
     if (*txtpos != NL) *txtpos = '^';
     list_line = current_line;
-    //printline();
+    printmsg(txtpos, 0);   //printline();
     *txtpos = tmp;                //gemerkte Position zurückschreiben
   }
   //Beep(0, 0);                     //Error-BEEP
@@ -585,7 +1010,7 @@ static void syntaxerror(const char *msg)
 void printmsg(const char *msg, int nl) {
 
   while (*msg) {
-    Serial.write(*msg++);
+    outchar(*msg++);
   }
 
   if (nl == 1) {
@@ -603,7 +1028,7 @@ void storeLine(int num, char* code) {
           program[j] = program[j + 1];
         }
         lineCount--;
-        Serial.println("DELETED");
+        printmsg("DELETED", 1);
       } else {
         strncpy(program[i].text, code, LINE_LEN - 1);                                              // ÜBERSCHREIBEN
         program[i].text[LINE_LEN - 1] = '\0';
@@ -628,25 +1053,138 @@ void storeLine(int num, char* code) {
     program[insertPos].text[LINE_LEN - 1] = '\0';
     lineCount++;
   } else {
-    Serial.println("MEMORY FULL");
+    syntaxerror(outofmemory);
   }
 }
 
-void doList() {
+int waitkey() {
+  outchar(13);
+  println("< Continue = Space/Enter, Break = ESC >");
+  while (1) {
+    if (lastUsbChar != -1) {
+      int c = lastUsbChar;
+      lastUsbChar = -1;
+      if (c == 27) return 1;
+      if (c == 32 || c == '\n') break;
+    }
+  }
+  return 0;
+}
+
+
+//################################################################# Syntax-Hervorhebung - muss noch angepasst werden #######################################################################################
+
+// Hilfsfunktion zum farbigen Drucken einer Zeile
+
+void printColoredLine(char* lineText) {
+  char* old_txtpos = txtpos;
+  txtpos = lineText;
+
+  if (strstr(lineText, "NEXT") || strstr(lineText, "WEND")) {           // Einrückung zurücknehmen
+    currentIndent--;
+    if (currentIndent < 0) currentIndent = 0;
+  }
+
+  for (int i = 0; i < currentIndent; i++) print("  ");                  // Einrückung vor der Zeile drucken, wenn noch FOR oder WHILE Schleifen da sind
+
+  while (*txtpos) {
+    if (*txtpos == ' ') {
+      print(*txtpos++);
+      continue;
+    }
+    char* startOfToken = txtpos;
+
+    int cmdToken = getCommandToken();                                   // Überprüfung auf Befehle
+    if (cmdToken != TOKEN_ERROR && cmdToken != TOKEN_VARIABLE) {
+      if (cmdToken == TOKEN_FOR || cmdToken == TOKEN_WHILE) {           // FOR und WHILE - Schleifen einrücken
+        currentIndent++;
+      }
+
+      if (cmdToken == TOKEN_REM) {                                      // Grau für REM-Zeile ignorieren
+        fbcolor(GRAY, 0);
+        while (*startOfToken) print(*startOfToken++);
+        fbcolor(WHITE, 0);
+        break; // Beendet die Verarbeitung dieser Zeile
+      }
+
+      fbcolor(YELLOW, 0);                                   // Gelb für Befehle
+      while (startOfToken < txtpos) print(*startOfToken++);
+      fbcolor(WHITE, 0);
+      continue;
+    }
+
+    txtpos = startOfToken;
+
+    // 2. DANN: Alles andere über getFunctionToken
+    int token = getFunctionToken();
+    if (token != TOKEN_ERROR && token != TOKEN_END) {
+      switch (token) {
+        case TOKEN_STRING_LITERAL:                        // Rot für Strings in Anführungszeichen
+          fbcolor(RED, 0);
+          break;
+        case TOKEN_VARIABLE:
+          if (isStringVar) fbcolor(MAGENTA, 0);           // Magenta für String-Variablen
+          else fbcolor(GREEN, 0);                         // Grün für numerische Variablen
+          break;
+        case TOKEN_NUMBER:
+          fbcolor(WHITE, 0);                              // Zahlen weiss
+          break;
+        default:
+          fbcolor(CYAN, 0);                               // Cyan für Funktionen
+          break;
+      }
+      while (startOfToken < txtpos) print(*startOfToken++);
+      fbcolor(WHITE, 0);
+      continue;
+    }
+
+
+    txtpos = startOfToken;                                // 3. Fallback für Operatoren
+    print(*txtpos++);
+  }
+  println("");
+  txtpos = old_txtpos;
+}
+
+void cmd_list() {
+
+  int currentIndent = 0;
+  int tmp_color = rgbToVGA(H_COL[0], H_COL[1], H_COL[2]); //aktuelle Hintergrundfarbe sichern
+  fbcolor(0, 1);                                          //Hintergrund für die Listausgabe in Schwarz
+  //cmd_cls();                                            //vorher Bildschirm löschen ?, reine Geschmackssache
+
+  int zeilen = 0;
   if (lineCount == 0) {
-    Serial.println("EMPTY");
+    printmsg("EMPTY", 1);
     return;
   }
-  Serial.println("--- PROGRAM ---");
-  for (int i = 0; i < lineCount; i++) {
-    // Zeilennummer ausgeben
-    Serial.print(program[i].number);
-    Serial.print(" ");
-    Serial.println(program[i].text);                                                                // Den Text der Zeile ausgeben
-    if (i % 10 == 0) delay(2);                                                                      // Kurze Pause für den Serial-Puffer bei sehr langen Programmen
+
+  int startline = (int)expression();
+  int endline = 65535;
+  if (*txtpos == ',') {
+    txtpos++;
+    endline = (int)expression();
   }
-  Serial.println("READY.");
+
+  for (int i = 0; i < lineCount; i++) {
+    if ((program[i].number >= startline) && (program[i].number <= endline)) {
+      fbcolor(WHITE, 0);
+      print(program[i].number);
+
+      printColoredLine(program[i].text);                  //List-Zeile farbig ausgeben
+
+      //fbcolor(WHITE, 0);
+      zeilen++;
+      if (zeilen == 20) {
+        if (waitkey()) return;
+        zeilen = 0;
+      }
+    }
+  }
+  fbcolor(tmp_color, 1);
 }
+//################################################################# Ende Syntax-Hervorhebung - muss noch angepasst werden #######################################################################################
+
 
 bool jumpTo(int label) {
   for (int i = 0; i < lineCount; i++) {
@@ -658,14 +1196,12 @@ bool jumpTo(int label) {
   return false;
 }
 
-
-char spaces() {                                                                                     // Leerzeichen überspringen
+inline char spaces() {                                                                                     // Leerzeichen überspringen
   while (*txtpos == ' ' || *txtpos == '\t') txtpos++;
   return *txtpos;
 }
-
-bool expect(char expected) {
-  // Leerzeichen überspringen
+/*
+  bool expect(char expected) {
   spaces();
   // 2. Prüfen, ob das Zeichen übereinstimmt
   if (*txtpos == expected) {
@@ -674,13 +1210,132 @@ bool expect(char expected) {
   }
   isRunning = false;                                                                                // Programm stoppen
   return false;
+  }
+*/
+double func_gtime(int w) {
+  Teensy3Clock.get();
+  switch (w) {
+    case 1: return hour();
+    case 2: return minute();
+    case 3: return second();
+    case 4: return day();
+    case 5: return month();
+    case 6: return year();
+    case 7: return weekday();
+    default:
+      return now();
+      break;
+  }
 }
 
 
+double func_fn() {
+  spaces();
+  if (!isalpha(*txtpos)) return 0.0;
+
+  char fName = toupper(*txtpos++);
+  int idx = fName - 'A';
+
+  double argValues[4] = {0.0, 0.0, 0.0, 0.0};
+  int argCount = 0;
+
+  // 1. Parameter-Werte berechnen
+  if (*txtpos == '(') {
+    txtpos++;
+    while (*txtpos != ')' && *txtpos != '\0' && argCount < 4) {
+      argValues[argCount++] = expression();
+      spaces();
+      if (*txtpos == ',') txtpos++;
+      spaces();
+    }
+    if (*txtpos == ')') txtpos++;
+  }
+
+  // WICHTIG: Prüfen ob Singular "function" oder Plural "functions"
+  if (function[idx].formula == NULL) return 0.0;
+
+  // 2. BACKUP & KONTEXT
+  const char* oldTxtpos = txtpos;
+  double oldParamValues[4];
+
+  for (int i = 0; i < function[idx].paramCount; i++) {
+    int varIdx = function[idx].params[i] - 'A';
+    oldParamValues[i] = variables[varIdx][0];
+    variables[varIdx][0] = argValues[i];
+  }
+
+  // 3. FORMEL AUSWERTEN
+  txtpos = function[idx].formula;
+  double result = expression();
+
+  // 4. WIEDERHERSTELLUNG
+  // KORREKTUR: "function" statt "functions" (passend zu oben)
+  for (int i = 0; i < function[idx].paramCount; i++) {
+    int varIdx = function[idx].params[i] - 'A';
+    variables[varIdx][0] = oldParamValues[i];
+  }
+  txtpos = oldTxtpos;
+
+  return result;
+}
 
 
+static int inkey() {
+  myusb.Task();
+
+  if (lastUsbChar != -1) {
+    int c = lastUsbChar;                          //Taste holen
+    lastUsbChar = -1;                             //Tastaturpuffer löschen
+    delay(10);                                     //wichtig, sonst flimmert das Bild bei Inkey
+    return c;
+  }
+  delay(10);
+  return 0;                                       // nichts gedrückt, dann zurück
+}
+
+//unterste ebene factor
 double factor() {
   spaces();
+
+  // TURBO: Sofort-Check für einfache Variablen
+  if (isalpha(*txtpos)) {
+    const char* p = txtpos + 1;
+    if (!isalnum(*p) && *p != '$' && *p != '(') {
+      int v1 = *txtpos - 'A';
+      txtpos = p;
+      return variables[v1][0]; // Direkter Rücksprung!
+    }
+  }
+
+  // --- NEU: Logisches NOT mit '!' ---
+  if (*txtpos == '!') {
+    txtpos++; // Überspringe das '!'
+    double val = factor(); // Rekursiver Aufruf, um den Wert dahinter zu holen
+    return (val == 0) ? 1.0 : 0.0;
+  }
+  // --- NEU: Präfix-Erkennung für Hex, Bin und Oct ---
+  if (*txtpos == '&') {
+    txtpos++; // Überspringe das '&'
+    char type = *txtpos;
+    txtpos++; // Überspringe den Typ-Kennner (H, B oder O)
+
+    char *endPtr;
+    long val = 0;
+
+    if (type == 'H') {
+      val = strtol(txtpos, &endPtr, 16); // Hexadezimal
+    } else if (type == 'B') {
+      val = strtol(txtpos, &endPtr, 2);  // Binär
+    } else if (type == 'O') {
+      val = strtol(txtpos, &endPtr, 8);  // Oktal
+    } else {
+      syntaxerror(valmsg);
+      return 0;
+    }
+
+    txtpos = endPtr; // Setze den Zeiger hinter die erkannte Zahl
+    return (double)val;
+  }
 
   // 1. Einfache Klammer (ohne Funktion davor)
   if (*txtpos == '(') {
@@ -690,36 +1345,57 @@ double factor() {
     return res;
   }
 
+  // 1.5 Direkte Prüfung auf Zahlen (inkl. Scientific Notation wie 1E+38)
+  if (isdigit(*txtpos) || *txtpos == '.') {
+    char* endPtr;
+    double val = strtod(txtpos, &endPtr);
+    txtpos = endPtr;
+    return val;
+  }
+
   const char* checkpoint = txtpos;                  //txtpos sichern falls kein Token gefunden wird
+
   // 2. Token holen
   int t = getFunctionToken();
   double arg;
   if (t != TOKEN_ERROR && t != TOKEN_VARIABLE) {
-    //Serial.print(t);
+    //print(t);
     switch (t) {
       case TOKEN_NUMBER:
         return lastNumberValue;
 
       case TOKEN_PI:
+        if (*txtpos == '(') txtpos++;
+        if (*txtpos == ')') txtpos++;
         return 3.141592653589793;
+
+      case TOKEN_TIMER:
+        return (double)millis();
 
       case TOKEN_VARIABLE:
         if (isStringVar) {
           return 0;
         }
-        return variables[vIdx1][vIdx2];
+        return (double)variables[vIdx1][vIdx2];
+
+      case TOKEN_FN:
+        return func_fn();
+
+      case TOKEN_INKEY:
+        return (double)inkey();
 
       case TOKEN_VAL: {
-          if (spaces() == '(') {
+          spaces();
+          if (*txtpos == '(') {
             txtpos++;
 
             String s = parseStringExpression();           // Liest den String
 
             if (*txtpos == ')') {
-              txtpos++;                                   // WICHTIG: Die ')' überspringen, damit sie weg ist!
-              return atof(s.c_str());
+              txtpos++;
+              return strtod(s.c_str(), NULL); //return atof(s.c_str());
             } else {
-              syntaxerror("MISSING ) IN VAL");
+              syntaxerror(valmsg);
               return 0;
             }
           }
@@ -765,26 +1441,34 @@ double factor() {
           }
           return 0; // Fallback, falls String leer
         }
-      case TOKEN_FREEMEM: {
-          // Prüfen, ob Klammern folgen: FREEMEM()
+      case TOKEN_FRE: {
+          // Prüfen, ob Klammern folgen: FRE(x) 1-usedlines 2-freelines 3-totalRam 4-usedRam 5-freeBytes
           spaces();
-          // Gibt den freien Heap-Speicher des Teensy zurück
-          return (double)get_free_ram();
+          if (*txtpos == '(') {
+            txtpos++; // Öffnende Klammer (
+            int i = expression();
+            double res = get_mem(i);
+            spaces();
+            if (*txtpos == ')') txtpos++; // Schließende Klammer )
+            if (i > 0 && i < 6) return res;
+          }
+          // Gibt Speicherwerte des Basic-Interpreters zurück
+          return 0;
         }
-      
       // Gruppe der mathematischen Funktionen
       case TOKEN_RND: case TOKEN_SQR: case TOKEN_SIN: case TOKEN_COS:
       case TOKEN_ABS: case TOKEN_INT: case TOKEN_DEG: case TOKEN_RAD:
-      case TOKEN_SGN:
+      case TOKEN_SGN: case TOKEN_BIN : case TOKEN_HEX : case TOKEN_OCT :
+      case TOKEN_GTIME :
         // Gemeinsame Logik für die Klammern der Funktionen
         spaces();
         if (*txtpos == '(') txtpos++;
         arg = expression();
         if (*txtpos == ')') txtpos++;
-        spaces();
+
         // Berechnung basierend auf dem Token
         switch (t) {
-          case TOKEN_RND: return (double)(random((int)arg) + 1);
+          case TOKEN_RND: return (double)(random((int)arg));
           case TOKEN_SQR: return sqrt(arg);
           case TOKEN_SIN: return sin(arg);
           case TOKEN_COS: return cos(arg);
@@ -794,8 +1478,11 @@ double factor() {
           case TOKEN_DEG: return arg * (180.0 / 3.14159265359);
           case TOKEN_SGN: return (arg > 0) ? 1.0 : (arg < 0 ? -1.0 : 0.0);
           case TOKEN_DREAD : pinMode(int(arg), INPUT_PULLUP); return (double)digitalRead(int(arg));
-          
-    
+          case TOKEN_HEX: printMode = 16; return arg;
+          case TOKEN_BIN: printMode = 2;  return arg;
+          case TOKEN_OCT: printMode = 8;  return arg;
+          case TOKEN_GTIME: return func_gtime(arg);
+
         }
         break;
 
@@ -827,19 +1514,14 @@ double factor() {
   return 0;
 }
 
-// 2. Mittlere Ebene: Multiplikation und Division
-double term() {
+//untere Ebene Power
+double power() {
   double val = factor();
   while (true) {
     spaces();
-    if (*txtpos == '*') {
+    if (*txtpos == '^') {
       txtpos++;
-      val *= factor();
-    } else if (*txtpos == '/') {
-      txtpos++;
-      double divisor = factor();
-      if (divisor != 0) val /= divisor;
-      else Serial.println("DIV BY ZERO");
+      val = pow(val, power()); // Rechts-assoziativ für 2^3^2
     } else {
       return val;
     }
@@ -847,7 +1529,35 @@ double term() {
 }
 
 
-// 3. Oberste Ebene: Addition und Subtraktion
+// 3. Mittlere Ebene: Multiplikation und Division
+double term() {
+  double val = power();
+  while (true) {
+    spaces();
+    if (*txtpos == '*') {
+      txtpos++;
+      val *= power();
+    } else if (*txtpos == '/') {
+      txtpos++;
+      double divisor = power();
+      if (divisor != 0) val /= divisor;
+      else syntaxerror(zeroerror);
+    } else if (*txtpos == '%') { // NEU: Modulo Operator
+      txtpos++;
+      double divisor = power();
+      if (divisor != 0) {
+        val = fmod(val, divisor); // fmod ist die Modulo-Funktion für double
+      } else {
+        syntaxerror(zeroerror);
+      }
+    } else {
+      return val;
+    }
+  }
+}
+
+
+// 4. Oberste Ebene: Addition und Subtraktion
 double expression() {
   double val = term();
   while (true) {
@@ -912,62 +1622,68 @@ String getVarName(int i, int j) {
 
 void doVars() {
   // 1. Numerische Variablen (wie bisher)
-  Serial.println("--- NUMERISCHE VARIABLEN ---");
+  printmsg("--- NUMERISCHE VARIABLEN ---", 1);
   bool foundNum = false;
   for (int i = 0; i < 26; i++) {
     for (int j = 0; j < 37; j++) {
-      if (variables[i][j] != 0.0f) {
-        Serial.print(getVarName(i, j));
-        Serial.print(" = ");
-        Serial.println(variables[i][j], precisionValue);
+      if (variables[i][j] != 0.0) {
+        print(getVarName(i, j));
+        printmsg(" = ", 0);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.10g", variables[i][j]);
+        println(buf);
         foundNum = true;
       }
     }
   }
-  if (!foundNum) Serial.println("(Keine)");
+  if (!foundNum) printmsg("(Keine)", 0);
 
   // 2. String Variablen (wie bisher)
-  Serial.println("\n--- STRING VARIABLEN ---");
+  printmsg("\n--- STRING VARIABLEN ---", 1);
   bool foundStr = false;
   for (int i = 0; i < 26; i++) {
     for (int j = 0; j < 37; j++) {
       if (stringVars[i][j] != "") {
-        Serial.print(getVarName(i, j));
-        Serial.print("$ = \"");
-        Serial.print(stringVars[i][j]);
-        Serial.println("\"");
+        print(getVarName(i, j));
+        printmsg("$ = \"", 0);
+        println(stringVars[i][j]);
+        printmsg("\"", 1);
         foundStr = true;
       }
     }
   }
-  if (!foundStr) Serial.println("(Keine)");
+  if (!foundStr) printmsg("(Keine)", 1);
 
   // 3. ANGEPASST: 3D-ARRAYS mit Zwei-Buchstaben-Namen
-  Serial.println("\n--- DIMENSIONIERTE ARRAYS (3D) ---");
+  printmsg("\n--- DIMENSIONIERTE ARRAYS ---", 1);
   if (arrayCount == 0) {
-    Serial.println("(Keine)");
+    printmsg("(Keine)", 1);
   } else {
     for (int i = 0; i < arrayCount; i++) {
-      Serial.print("DIM ");
+      print("DIM ");
 
       // Hier nutzen wir getVarName mit den gespeicherten Indizes
-      Serial.print(getVarName(allArrays[i].vIdx1, allArrays[i].vIdx2));
+      print(getVarName(allArrays[i].vIdx1, allArrays[i].vIdx2));
 
-      if (allArrays[i].isString) Serial.print("$");
+      if (allArrays[i].isString) print("$");
 
-      Serial.print("(");
-      Serial.print(allArrays[i].dimX - 1); Serial.print(",");
-      Serial.print(allArrays[i].dimY - 1); Serial.print(",");
-      Serial.print(allArrays[i].dimZ - 1);
-      Serial.print(")");
+      print("(");
+      print(allArrays[i].dimX - 1);
+      if ((allArrays[i].dimY - 1) > 0) {
+        print(",");
+        print(allArrays[i].dimY - 1); print(",");
+        if ((allArrays[i].dimZ - 1) > 0)
+          print(allArrays[i].dimZ - 1);
+      }
+      print(")");
 
       int totalElements = allArrays[i].dimX * allArrays[i].dimY * allArrays[i].dimZ;
-      Serial.print("  [");
-      Serial.print(totalElements);
-      Serial.println(" Elemente]");
+      printmsg("  [", 0);
+      print(totalElements);
+      printmsg(" Elemente]", 1);
     }
   }
-  Serial.println("--------------------------------");
+  printmsg("--------------------------------", 1);
 }
 
 void cmd_print() {
@@ -975,43 +1691,96 @@ void cmd_print() {
 
   while (*txtpos != '\0' && *txtpos != ':' && *txtpos != '\r' && *txtpos != '\n') {
     spaces();
+    printMode = 0; // Vor jedem Element zurücksetzen!
 
-    // --- 1. STRING-CHECK (Literale, Variablen oder ARRAYS) ---
-    // Wir schauen nur kurz voraus, ob ein " oder ein Buchstabe mit $ folgt
+    // --- AT(x,y) CHECK ---
+    if (strncmp(txtpos, "AT", 2) == 0) {
+      txtpos += 2;
+      spaces();
+      if (*txtpos == '(') {
+        txtpos++;
+        int newX = (int)expression();
+        if (*txtpos == ',') txtpos++;
+        int newY = (int)expression();
+        if (*txtpos == ')') txtpos++;
+
+        if (newX >= 0 && newX < MAX_C) x_pos = newX;
+        if (newY >= 0 && newY < MAX_R) y_pos = newY;
+
+        newline = false;
+        spaces();
+        if (*txtpos == ';') txtpos++;
+      }
+      continue; // Nächstes Element in PRINT bearbeiten
+    }
+    //--- TAB(x) CHECK ---
+    if (strncmp(txtpos, "TAB", 3) == 0) {
+      txtpos += 3;
+      spaces();
+      if (*txtpos == '(') {
+        txtpos++;
+        int newX = expression();
+        if (*txtpos == ')') txtpos++;
+        if (newX >= 0 && newX < MAX_C) x_pos = newX;
+
+        newline = false;
+        spaces();
+        if (*txtpos == ';') txtpos++;
+      }
+      continue; // Nächstes Element in PRINT bearbeiten
+    }
+
+    // --- 1. STRING-CHECK ---
     bool isString = (*txtpos == '"');
-    // Prüfen auf String-Keywords oder Variablen mit $
     if (!isString && isalpha(*txtpos)) {
-      // Prüfen auf LEFT$, MID$, RIGHT$, STR$ oder A$
-      if (strncmp(txtpos, "LEFT$", 5) == 0 ||
-          strncmp(txtpos, "MID$", 4) == 0 ||
-          strncmp(txtpos, "RIGHT$", 6) == 0 ||
-          strncmp(txtpos, "STR$", 4) == 0) {
+      if (strncmp(txtpos, "LEFT$", 5) == 0 || strncmp(txtpos, "MID$", 4) == 0 ||
+          strncmp(txtpos, "RIGHT$", 6) == 0 || strncmp(txtpos, "STR$", 4) == 0 ||
+          strncmp(txtpos, "SPC", 3) == 0 || strncmp(txtpos, "TIME$", 5) == 0 ||
+          strncmp(txtpos, "DATES$", 6) == 0 ) {
         isString = true;
       } else {
-        // Prüfen ob es eine Variable mit $ ist (z.B. A$)
         const char* p = txtpos;
         while (isalnum(*p)) p++;
         if (*p == '$') isString = true;
       }
     }
-    /*
-      if (!isString && isalpha(*txtpos)) {
-      // Vorschau: Folgt ein $ nach dem Variablennamen?
-      const char* p = txtpos + 1;
-      if (isalnum(*p)) p++; // Zweites Zeichen (A1)
-      if (*p == '$') isString = true;
-      }
-    */
+
     if (isString) {
-      // Nutze deine mächtige Funktion für ALLES, was String ist!
-      Serial.print(parseStringExpression());
+      print(parseStringExpression());
       newline = true;
+
     }
-    // --- 2. NUMERISCHE AUSDRÜCKE ---
+    // --- 2. NUMERISCHE AUSDRÜCKE (inkl. HEX/BIN/OCT) ---
     else {
       double val = expression();
-      if (val == (long)val) Serial.print((long)val);
-      else Serial.print(val, precisionValue);
+
+      // Prüfen, ob eine Spezialfunktion das printMode-Flag gesetzt hat
+      if (printMode == 16) {
+        print("H");
+        print((double)val, HEX);
+      }
+      else if (printMode == 2)  {
+        print("B");
+        print((double)val, BIN);
+      }
+      else if (printMode == 8)  {
+        print("O");
+        print((double)val, OCT);
+      }
+      else {
+        // Normaler numerischer Print
+        if (val == (long)val && val < 2147483647 && val > -2147483648) {
+          print((long)val);
+        }
+        // 2. Alles andere (Groß, Klein oder Fließkomma)
+        else {
+          char buf[32];
+          // %g ist die sicherste Wahl für double auf dem Teensy
+          // Es wechselt automatisch zu 1.23E+38, wenn die Zahl zu groß wird
+          snprintf(buf, sizeof(buf), "%.10g", val);
+          print(buf);
+        }
+      }
       newline = true;
     }
 
@@ -1023,14 +1792,16 @@ void cmd_print() {
     }
     else if (*txtpos == ',') {
       txtpos++;
-      Serial.print("\t");
+      print("\t");
       newline = false;
     }
     else break;
   }
 
-  if (newline) Serial.println();
+  if (newline) println();
 }
+
+
 
 void clearAll() {
 
@@ -1066,38 +1837,133 @@ void cmd_new() {
 
 
 void cmd_run() {
+  spaces();
+
+  if (*txtpos != '\0') {
+    String fileNameStr = parseStringExpression();
+    if (fileNameStr.length() > 0) {
+
+      if (!SD.exists(fileNameStr.c_str())) {
+        print("FILE NOT FOUND: ");
+        println(fileNameStr.c_str());
+        return;
+      }
+
+      cmd_new();                                                                       // Speicher löschen vor dem Laden
+
+      File file = SD.open(fileNameStr.c_str());
+      if (file) {
+        char lineBuffer[128];
+        while (file.available()) {
+          int len = 0;
+          while (file.available() && len < 127) {
+            char c = file.read();
+            if (c == '\n') break;
+            if (c != '\r') lineBuffer[len++] = c;
+          }
+          lineBuffer[len] = '\0';
+
+          char* p = lineBuffer;
+          while (*p && isspace(*p)) p++;
+          if (isdigit(*p)) {
+            int lineNumber = atoi(p);
+            while (isdigit(*p)) p++;
+            storeLine(lineNumber, p);
+          }
+        }
+        file.close();
+      }
+    }
+  }
   clearAll();
+
   if (lineCount == 0) {                                                                //Prüfen, ob überhaupt ein Programm im Speicher ist
-    Serial.println("NO PROGRAM");
+    printmsg("NO PROGRAM", 1);
     return;
   }
-  txtpos = program[0].text; // <--- Direkt die erste Zeile laden!
+  txtpos = program[0].text;                                                            // <--- Direkt die erste Zeile laden!
+
 }
 
+
+
 void skip_line() {
-  while (*txtpos != '\0') txtpos++;                                                      //Rest der Zeile ignorieren
+  while (*txtpos != '\0') txtpos++;                                                    //Rest der Zeile ignorieren
 }
 
 void cmd_input() {
   spaces();
+
   if (*txtpos == '"') {
     txtpos++;
-    while (*txtpos != '"' && *txtpos != '\0') Serial.print(*txtpos++);
+    while (*txtpos != '"' && *txtpos != '\0') outchar(*txtpos++);
     if (*txtpos == '"') txtpos++;
     spaces();
     if (*txtpos == ',' || *txtpos == ';') txtpos++;
   } else {
-    Serial.print("? ");
+    printmsg("? ", 0);
+  }
+
+  char *save_txtpos = txtpos;                                                         //Den BASIC-Pointer (txtpos) kurz sichern
+
+  getln(0);
+  char *inputPtr = inputBuffer;
+  txtpos = save_txtpos;                                                               //Zurück zum alten BASIC-Programm-Pointer für die Variablen-Suche
+
+  while (true) {
+    int t = getCommandToken();
+    if (t != TOKEN_VARIABLE) return;
+
+    int tV1 = vIdx1;
+    int tV2 = vIdx2;
+
+    char *nextPtr;
+    double inVal = strtod(inputPtr, &nextPtr);
+    variables[tV1][tV2] = inVal;
+
+    inputPtr = nextPtr;
+    while (*inputPtr != '\0' && !isdigit(*inputPtr) && *inputPtr != '-' && *inputPtr != '.') {
+      inputPtr++;
+    }
+
+    spaces();
+    if (*txtpos == ',') {
+      txtpos++;
+    } else {
+      line_terminator();
+      return;
+    }
+  }
+}
+
+
+/*
+  void cmd_input() {
+  char c;
+  char *tmptxt;
+
+  spaces();
+  if (*txtpos == '"') {
+    txtpos++;
+    while (*txtpos != '"' && *txtpos != '\0') print(*txtpos++);
+    if (*txtpos == '"') txtpos++;
+    spaces();
+    if (*txtpos == ',' || *txtpos == ';') txtpos++;
+  } else {
+    printmsg("? ", 0);
   }
   // --- NEU: ALTE RESTE ENTFERNEN ---
   delay(10);                                                                                        // Kurz warten, falls noch Zeichen eintrudeln
+
   while (Serial.available() > 0) Serial.read();
 
   while (Serial.available() == 0) {                                                                 // 2. WARTEN, bis der User wirklich anfängt zu tippen
+
     yield(); // Watchdog füttern
   }
 
-  String inputLine = Serial.readStringUntil('\n');                                                  // 3. JETZT die ganze Zeile lesen
+  String inputLine = Serial.readStringUntil('\n');
+  println();
   inputLine.trim();
 
   char *inputPtr = (char*)inputLine.c_str();                                                        // Pointer auf den Anfang unserer gelesenen Zeile setzen
@@ -1121,22 +1987,23 @@ void cmd_input() {
     while (*inputPtr != '\0' && !isdigit(*inputPtr) && *inputPtr != '-' && *inputPtr != '.') {      // Im eingelesenen String zum nächsten Trenner springen (Komma/Leerzeichen)
       inputPtr++;
     }
-
-    if (spaces() == ',') {                                                                          // 5. Prüfen, ob im BASIC-CODE ein Komma für die nächste Variable steht
+    spaces();
+    if (*txtpos == ',') {                                                                          // 5. Prüfen, ob im BASIC-CODE ein Komma für die nächste Variable steht
       txtpos++;
     } else {
-      Serial.println();
+      line_terminator();
       return;
     }
   }
-}
+  }
+*/
 
 void cmd_read() {
   while (isRunning) {
     // 1. Welche Variable/Array soll befüllt werden?
     int t = getCommandToken();
     if (t != TOKEN_VARIABLE) {
-      Serial.println("SYNTAX ERROR: Variable expected in READ");
+      syntaxerror(valmsg);
       isRunning = false;
       return;
     }
@@ -1151,7 +2018,7 @@ void cmd_read() {
       findNextData();
     }
     if (dataLineIdx >= lineCount) {
-      Serial.println("OUT OF DATA ERROR");
+      syntaxerror(datamsg);
       isRunning = false;
       return;
     }
@@ -1194,7 +2061,7 @@ void cmd_read() {
         if (isStr) allArrays[i].strData[idx] = sVal;
         else allArrays[i].numData[idx] = val;
       } else {
-        Serial.print("ARRAY NOT DIMENSIONED: "); Serial.println(getVarName(targetV1, targetV2));
+        syntaxerror(' '); printmsg(dimmsg, 0);
         isRunning = false; return;
       }
     } else {
@@ -1213,60 +2080,7 @@ void cmd_read() {
   }
 }
 
-/*
-  void cmd_read() {
-  while (true) {
-    // 1. Welche Variable soll befüllt werden? (z.B. READ A)
-    if (getCommandToken() != TOKEN_VARIABLE) {
-      Serial.println("SYNTAX ERROR: Variable expected");
-      isRunning = false;
-      return;
-    }
 
-    // Indizes der Zielvariable von getToken() sichern
-    int targetV1 = vIdx1;
-    int targetV2 = vIdx2;
-
-    // 2. Datenquelle suchen
-    if (dataPtr == NULL || *dataPtr == '\0') {
-      findNextData();
-    }
-
-    if (dataLineIdx >= lineCount) {
-      Serial.println("OUT OF DATA ERROR");
-      isRunning = false;
-      return;
-    }
-
-    // 3. Zahl extrahieren
-    char* next;
-    variables[targetV1][targetV2] = strtod(dataPtr, &next);
-
-    // Falls keine Zahl gelesen wurde (strtod hat sich nicht bewegt)
-    if (dataPtr == next) {
-      dataPtr++; // Ein Zeichen weiterschieben (z.B. Komma überspringen)
-      findNextData(); // Neu suchen
-      if (dataLineIdx >= lineCount) {
-        isRunning = false;
-        return;
-      }
-      variables[targetV1][targetV2] = strtod(dataPtr, &next);
-    }
-    dataPtr = next;
-
-    // 4. Den DATA-Pointer zum nächsten Element schieben (Komma/Leerzeichen überspringen)
-    while (*dataPtr == ' ' || *dataPtr == ',') dataPtr++;
-
-    // 5. Trenner im READ-Befehl prüfen (z.B. READ A, B)
-    if (spaces() == ',') {
-      txtpos++; // Komma im Quellcode überspringen
-      // Schleife läuft weiter für die nächste Variable B
-    } else {
-      return; // Ende des READ-Befehls
-    }
-  }
-  }
-*/
 
 void findNextData() {
   while (dataLineIdx < lineCount) {
@@ -1310,8 +2124,8 @@ void cmd_restore() {
     }
 
     if (!found) {
-      Serial.print("RESTORE LINE NOT FOUND: ");
-      Serial.println(targetLineNum);
+      print("RESTORE LINE NOT FOUND: ");
+      println(targetLineNum);
       isRunning = false;
     }
   } else {
@@ -1325,186 +2139,201 @@ String parseStringExpression() {
   String res = "";
   spaces();
 
-  // --- Teil 1: Den ersten String-Teil lesen ---
-  if (*txtpos == '"') {
+  // --- Teil 1: Basis-Element (Literal, Funktion oder Variable) ---
+  if (*txtpos == '"') { // 1. String Literal "TEXT"
     txtpos++;
-    while (*txtpos != '"' && *txtpos != '\0') {
-      res += *txtpos++;
-    }
+    const char* start = txtpos;
+    while (*txtpos != '"' && *txtpos != '\0') txtpos++;
+    int len = txtpos - start;
+    res = String(start).substring(0, len); // Schneller als zeichenweise +=
     if (*txtpos == '"') txtpos++;
-    //Serial.print(*txtpos);
   }
-  // --- LEFT$(s$, n) ---
-  if (strncmp(txtpos, "LEFT$", 5) == 0) {
-    txtpos += 5;
-    if (spaces() == '(') {
-      txtpos++;
-      String s = parseStringExpression();
-      int n = 0;
-      if (spaces() == ',') {
-        txtpos++;
-        n = (int)expression();
-      }
-      if (spaces() == ')') txtpos++;
-      res = s.substring(0, n);
-    }
-  }
-  // --- RIGHT$(s$, n) ---
-  else if (strncmp(txtpos, "RIGHT$", 6) == 0) {
-    txtpos += 6;
-    if (spaces() == '(') {
-      txtpos++;
-      String s = parseStringExpression();
-      int n = 0;
-      if (spaces() == ',') {
-        txtpos++;
-        n = (int)expression();
-      }
-      if (spaces() == ')') txtpos++;
-      if (n > s.length()) n = s.length();
-      res = s.substring(s.length() - n);
-    }
-  }
-  // --- MID$(s$, start, len) ---
-  else if (strncmp(txtpos, "MID$", 4) == 0) {
-    txtpos += 4; // Überspringe "MID$"
-    if (spaces() == '(') {
-      txtpos++;
-      String s = parseStringExpression();
-      int start = 0, len = -1;
-      if (spaces() == ',') {
-        txtpos++;
-        start = (int)expression();
-      }
-      if (spaces() == ',') {
-        txtpos++;
-        len = (int)expression();
-      }
-      if (spaces() == ')') txtpos++;
+  else {
+    // Nutze scanKeyword, um Funktionen wie LEFT$, MID$, etc. zu finden
+    int t = scanKeyword(functions);
 
-      start--; // BASIC 1-basiert zu C++ 0-basiert
-      if (start < 0) start = 0;
-      if (len == -1) res = s.substring(start);
-      else res = s.substring(start, start + len);
-    }
-  }
-  // B) STR$(zahl) Funktion
-  else if (strncmp(txtpos, "STR$", 4) == 0) {
-    txtpos += 4;
-    if (spaces() == '(') {
-      txtpos++;
-      double val = expression();
-      if (spaces() == ')') txtpos++;
-      if (val == (long)val) res = String((long)val);
-      else res = String(val, 2);
-    }
-  }
-  //  CHR$(zahl)
-  else if (strncmp(txtpos, "CHR$", 4) == 0) {
-    txtpos += 4;
-    spaces();
-    if (*txtpos == '(') {
-      txtpos++;
-      int code = (int)expression(); // Den ASCII-Wert berechnen
-      spaces();
-      if (*txtpos == ')') txtpos++;
+    switch (t) {
+      case TOKEN_SPC: {
+          if (*txtpos == '(') {
+            txtpos++;
+            int n = (int)expression();
+            if (*txtpos == ')') txtpos++;
+            res.reserve(n);
+            for (int i = 0; i < n; i++) res += ' ';
+          }
+          break;
+        }
 
-      // Den ASCII-Code in einen String mit einem Zeichen umwandeln
-      res = String((char)code);
-    }
-  }
-  //  SPC(zahl)
-  else if (strncmp(txtpos, "SPC$", 3) == 0) {
-    txtpos += 4;
-    spaces();
-    if (*txtpos == '(') {
-      txtpos++;
-      int code = (int)expression(); // Den ASCII-Wert berechnen
-      spaces();
-      if (*txtpos == ')') txtpos++;
-      for(int i=1; i<int(code); i++) res+=' ';
-      // Den ASCII-Code in einen String mit einem Zeichen umwandeln
-      //res = String((char)code);
-    }
-  }
-  
-  // FALL 2: String-Variable oder String-Array (z.B. A$ oder S$(1,2,3))
-  else if (isalpha(*txtpos)) {
-    lastVarName = toupper(*txtpos);
-    vIdx1 = lastVarName - 'A';
-    vIdx2 = 0;
-    txtpos++;
+      case TOKEN_LEFT:
+      case TOKEN_RIGHT:
+      case TOKEN_MID: {
+          if (*txtpos == '(') {
+            txtpos++;
+            String s = parseStringExpression();
+            int p1 = 0, p2 = -1; // p1 = start/n, p2 = len
+            if (*txtpos == ',') {
+              txtpos++;
+              p1 = (int)expression();
+            }
+            if (t == TOKEN_MID && spaces() == ',') {
+              txtpos++;
+              p2 = (int)expression();
+            }
+            if (*txtpos == ')') txtpos++;
 
-    if (isalnum(*txtpos) && *txtpos != '$') {
-      //Serial.print("ich bin hier");
-      vIdx2 = getVIdx2(*txtpos);
-      txtpos++;
-    }
+            if (t == TOKEN_LEFT) res = s.substring(0, p1);
+            else if (t == TOKEN_RIGHT) {
+              if (p1 > s.length()) p1 = s.length();
+              res = s.substring(s.length() - p1);
+            } else { // MID$
+              p1--; // 1-basiert zu 0-basiert
+              if (p1 < 0) p1 = 0;
+              if (p2 == -1) res = s.substring(p1);
+              else res = s.substring(p1, p1 + p2);
+            }
+          }
+          break;
+        }
 
-    if (*txtpos == '$') {
-      txtpos++; // Überspringe das '$'
+      case TOKEN_STR:
+      case TOKEN_CHR: {
+          if (*txtpos == '(') {
+            txtpos++;
+            double val = expression();
+            if (*txtpos == ')') txtpos++;
+            if (t == TOKEN_STR) {
+              res = (val == (long)val) ? String((long)val) : String(val, precisionValue);
+            } else {
+              res = String((char)(int)val);
+            }
+          }
+          break;
+        }
+      case TOKEN_STRING: {
+          if (*txtpos == '(') {
+            txtpos++;
+            double val = expression();
+            if (*txtpos == ',') {
+              txtpos++;
+              String p2 = parseStringExpression();
+              if (*txtpos == ')') txtpos++;
+              for (int i = 0; i < val; i++) {
+                res += p2;
+              }
+            }
+          }
+          break;
+        }
 
-      // Jetzt entscheiden: Ist es ein Array S$(...) oder eine einfache Variable S$?
-      if (*txtpos == '(') {
-        return get_string_array_value(); // Nutzt die Funktion von oben
-      } else {
-        res = stringVars[vIdx1][vIdx2]; // Einfache String-Variable
-      }
+      case TOKEN_TIME: {                                                                       //Uhrzeit-String
+          char buffer[9];
+          snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d", hour(), minute(), second());
+          res = String(buffer);
+        }
+        break;
+
+      case TOKEN_DATE: {                                                                      //Datums-String
+          char buffer[11];
+          snprintf(buffer, sizeof(buffer), "%02d.%02d.%04d", day(), month(), year());
+          res = String(buffer);
+        }
+        break;
+
+      default: // 3. String-Variable A$ oder Array S$(i)
+        if (isalpha(*txtpos)) {
+          vIdx1 = toupper(*txtpos) - 'A';
+          vIdx2 = 0;
+          txtpos++;
+          if (isalnum(*txtpos) && *txtpos != '$') {
+            vIdx2 = getVIdx2(*txtpos);
+            txtpos++;
+          }
+          if (*txtpos == '$') {
+            txtpos++;
+            if (*txtpos == '(') res = get_string_array_value();
+            else res = stringVars[vIdx1][vIdx2];
+          }
+        }
+        break;
     }
   }
 
-  // --- Teil 2: REKURSION für das '+' (Addition) ---
+  // --- Teil 2: String-Konkatenation (Addition mit +) ---
   spaces();
   if (*txtpos == '+') {
-    txtpos++; // Überspringe das '+'
-    res += parseStringExpression(); // Füge den nächsten Teil hinzu
+    txtpos++;
+    String nextPart = parseStringExpression();
+    res.reserve(res.length() + nextPart.length()); // Optimiert den RAM-Zugriff
+    res += nextPart;
   }
 
   return res;
+
 }
 
-/*
-  // FALL 2: String-Variable oder String-Array (z.B. A$ oder S$(1,2,3))
-  if (isalpha(*txtpos)) {
-  lastVarName = toupper(*txtpos);
-  vIdx1 = lastVarName - 'A';
-  vIdx2 = 0;
-  txtpos++;
 
-  if (isalnum(*txtpos) && *txtpos != '$') {
-    vIdx2 = getVIdx2(*txtpos);
-    txtpos++;
-  }
-
-  if (*txtpos == '$') {
-    txtpos++; // Überspringe das '$'
-
-    // Jetzt entscheiden: Ist es ein Array S$(...) oder eine einfache Variable S$?
-    if (*txtpos == '(') {
-      return get_string_array_value(); // Nutzt die Funktion von oben
-    } else {
-      return stringVars[vIdx1][vIdx2]; // Einfache String-Variable
-    }
-  }
-  }
-
-  return res;
-  }*/
-/*
-  String parseStringExpression() {
-  String res = "";
-  spaces();
-  if (*txtpos == '"') {
-    txtpos++;
-    while (*txtpos != '"' && *txtpos != '\0') {
-      res += *txtpos++;
-    }
-    if (*txtpos == '"') txtpos++;
-  }
-  return res;
-  }
-*/
 //************************************************************ GOSUB / RETURN **********************************************************
+void cmd_on() {
+  int index = (int)expression();
+  int jumpToken = getCommandToken(); // GOTO oder GOSUB
+
+  if (jumpToken != TOKEN_GOTO && jumpToken != TOKEN_GOSUB) {
+    println("Syntax Error: ON expects GOTO or GOSUB");
+    isRunning = false;
+    return;
+  }
+
+  int currentIdx = 1;
+  bool jumpedToTarget = false;
+
+  while (true) {
+    spaces();
+    int targetLine = (int)expression(); // Liest die nächste Nummer in der Liste
+
+    if (currentIdx == index) {
+      if (jumpToken == TOKEN_GOSUB) {
+        if (gosubStackPtr < MAX_GOSUB_STACK) {
+          // Wir suchen das Ende dieser ON-Anweisung für den RETURN-Punkt
+          const char* p = txtpos;
+          while (*p != '\0' && *p != ':' && *p != '\r' && *p != '\n') p++;
+
+          gosubStack[gosubStackPtr].lineIndex = currentLineIndex;
+          gosubStack[gosubStackPtr].textPos = p;
+          gosubStackPtr++;
+        } else {
+          println("GOSUB STACK OVERFLOW");
+          isRunning = false;
+          return;
+        }
+      }
+
+      if (jumpTo(targetLine)) {
+        // jumpTo setzt bereits currentLineIndex, wir setzen nur noch txtpos
+        txtpos = program[currentLineIndex].text;
+        jumped = true;
+        jumpedToTarget = true;
+      }
+      break;
+    }
+
+    spaces();
+    if (*txtpos == ',') {
+      txtpos++;
+      currentIdx++;
+    } else {
+      // Index nicht gefunden in der Liste -> Wir müssen txtpos ans Ende
+      // der Liste setzen, damit der Interpreter danach normal weiter macht.
+      break;
+    }
+  }
+
+  // Falls wir NICHT gesprungen sind, überspringe den Rest der Zahlenliste
+  if (!jumpedToTarget) {
+    while (*txtpos != '\0' && *txtpos != ':' && *txtpos != '\r' && *txtpos != '\n') {
+      txtpos++;
+    }
+  }
+}
 
 void cmd_gosub() {
   if (getFunctionToken() == TOKEN_NUMBER) {
@@ -1562,6 +2391,7 @@ void cmd_return() {
 
 //************************************************************ SD-Card-Funktionen **********************************************************
 void cmd_files() {
+  int zeilen = 0;
   spaces();
 
   String filter = "";
@@ -1572,7 +2402,7 @@ void cmd_files() {
 
   File root = SD.open("/");
   if (!root) {
-    Serial.println("Fehler: SD-Karte nicht bereit!");
+    println("Fehler: SD-Karte nicht bereit!");
     return;
   }
 
@@ -1580,11 +2410,11 @@ void cmd_files() {
   int fileCount = 0;
   uint64_t totalFilesSize = 0;
 
-  Serial.print("Dateien auf SD-Karte");
+  print("Files on SD-Crad");
   if (filter != "") {
-    Serial.print(" (Filter: *"); Serial.print(filter); Serial.print("*)");
+    print(" (Filter: *"); print(filter); print("*)");
   }
-  Serial.println(":");
+  println(":");
 
   while (true) {
     File entry = root.openNextFile();
@@ -1598,17 +2428,49 @@ void cmd_files() {
       fileCount++;
       totalFilesSize += entry.size();
 
-      Serial.print(fileName);
+      print(fileName);
       if (entry.isDirectory()) {
-        Serial.println("/");
+        print("/");
+        x_pos = 21;
+        println("< dir >");
+        zeilen++;
+        entry.close();
+        continue;
       } else {
-        if (fileName.length() < 8) Serial.print("\t");
-        Serial.print("\t");
-        Serial.print(entry.size());
-        Serial.println(" Bytes");
+        //if (fileName.length() < 8) print("\t");
+        //print("\t");
+        x_pos = 20;                                     //horizontale Ausgabeposition festlegen
+        print(entry.size());
+        //println(" Bytes");
+
+      }
+      // 2. Datum und Zeit am Ende der Zeile
+
+      x_pos = 30;
+      // 2. Datum und Zeit am Ende der Zeile
+      DateTimeFields tm;
+      if (entry.getModifyTime(tm)) { // Übergabe der Struktur statt Pointer
+        int year = tm.year + 1900;
+        int month = tm.mon + 1;
+        int day = tm.mday;
+        int hour = tm.hour;
+        int minute = tm.min;
+        if (day < 10) print("0"); print(day); print(".");
+        if (month < 10) print("0"); print(month); print(".");
+        println(year);
+      }
+
+      zeilen++;
+      if (zeilen == 20) {
+        if (waitkey()) {
+          entry.close();
+          break;
+        }
+        zeilen = 0;
       }
     }
     entry.close();
+
   }
   root.close();
 
@@ -1618,31 +2480,29 @@ void cmd_files() {
   uint64_t usedCardBytes = SD.usedSize();
   uint64_t freeCardBytes = totalCardBytes - usedCardBytes;
 
-  Serial.println("-----------------------------------");
-  Serial.print(fileCount); Serial.println(" Datei(en) gefunden.");
+  println("-----------------------------------");
+  print(fileCount); println(" Files found.");
 
-  Serial.print("Belegter Platz:   ");
+  print("Used memory:   ");
   printSmartSize(usedCardBytes);
 
-  Serial.print("Freier Speicher:  ");
+  print("Free memory:");
   printSmartSize(freeCardBytes);
 
-  Serial.print("Gesamtkapazitaet: ");
+  print("Total capacity: ");
   printSmartSize(totalCardBytes);
-
-  Serial.println("READY.");
 }
 
 // Hilfsfunktion zur schöneren Größenanzeige (B, KB, MB, GB)
 void printSmartSize(uint64_t bytes) {
   if (bytes < 1024) {
-    Serial.print((long)bytes); Serial.println(" B");
+    print((long)bytes); println(" B");
   } else if (bytes < 1048576) {
-    Serial.print((long)(bytes / 1024)); Serial.println(" KB");
+    print((long)(bytes / 1024)); println(" KB");
   } else if (bytes < 1073741824) {
-    Serial.print((long)(bytes / 1048576)); Serial.println(" MB");
+    print((long)(bytes / 1048576)); println(" MB");
   } else {
-    Serial.print((float)(bytes / 1073741824.0), 2); Serial.println(" GB");
+    print((float)(bytes / 1073741824.0), 2); println(" GB");
   }
 }
 
@@ -1654,7 +2514,7 @@ void cmd_rename() {
 
   spaces();
   if (*txtpos != ',') {
-    Serial.println("SYNTAX ERROR: Komma erwartet (RENAME alt, neu)");
+    println("SYNTAX ERROR: Komma erwartet (RENAME alt, neu)");
     return;
   }
   txtpos++; // Überspringe das Komma
@@ -1663,31 +2523,29 @@ void cmd_rename() {
   String newName = parseStringExpression();
 
   if (oldName.length() == 0 || newName.length() == 0) {
-    Serial.println("SYNTAX ERROR: Dateinamen fehlen");
+    println("SYNTAX ERROR: Dateinamen fehlen");
     return;
   }
 
   // 3. Umbenennen auf der SD-Karte
   if (SD.exists(oldName.c_str())) {
     if (SD.rename(oldName.c_str(), newName.c_str())) {
-      Serial.print("Datei umbenannt in: ");
-      Serial.println(newName);
+      print("Datei umbenannt in: ");
+      println(newName);
     } else {
-      Serial.println("FEHLER: Umbenennen fehlgeschlagen.");
+      println("FEHLER: Umbenennen fehlgeschlagen.");
     }
   } else {
-    Serial.print("FEHLER: Datei nicht gefunden: ");
-    Serial.println(oldName);
+    print("FEHLER: Datei nicht gefunden: ");
+    println(oldName);
   }
-
-  Serial.println("READY.");
 }
 
 void cmd_load() {
   spaces();
   String fileNameStr = parseStringExpression();
   if (fileNameStr.length() == 0) {
-    Serial.println("SYNTAX ERROR: File name expected");
+    println("SYNTAX ERROR: File name expected");
     return;
   }
 
@@ -1695,20 +2553,20 @@ void cmd_load() {
 
   // 2. Datei auf der SD-Karte des Teensy 4.1 suchen
   if (!SD.exists(fileName)) {
-    Serial.print("FILE NOT FOUND: ");
-    Serial.println(fileName);
+    print("FILE NOT FOUND: ");
+    println(fileName);
     return;
   }
 
   File file = SD.open(fileName);
   if (!file) {
-    Serial.println("ERROR: Could not open file");
+    println("ERROR: Could not open file");
     return;
   }
 
   cmd_new();
 
-  Serial.print("Loading "); Serial.println(fileName);
+  print("Loading "); println(fileName);
 
   char lineBuffer[128];
   while (file.available()) {
@@ -1735,7 +2593,6 @@ void cmd_load() {
   file.close();
   // Wichtig: Nach dem Laden sicherstellen, dass isRunning false ist
   isRunning = false;
-  Serial.println("READY.");
 }
 
 
@@ -1744,7 +2601,7 @@ void cmd_save() {
   String fileNameStr = parseStringExpression();
 
   if (fileNameStr.length() == 0) {
-    Serial.println("SYNTAX ERROR: File name expected");
+    println("SYNTAX ERROR: File name expected");
     return;
   }
 
@@ -1758,13 +2615,13 @@ void cmd_save() {
   // 3. Datei zum Schreiben öffnen
   File file = SD.open(fileName, FILE_WRITE);
   if (!file) {
-    Serial.print("ERROR: Could not create ");
-    Serial.println(fileName);
+    print("ERROR: Could not create ");
+    println(fileName);
     return;
   }
 
-  Serial.print("Saving to ");
-  Serial.println(fileName);
+  print("Saving to ");
+  println(fileName);
 
   // 4. Zeile für Zeile speichern
   for (int j = 0; j < lineCount; j++) {
@@ -1774,7 +2631,6 @@ void cmd_save() {
   }
 
   file.close();
-  Serial.println("READY.");
 }
 
 
@@ -1783,7 +2639,7 @@ void cmd_delete() {
   String fileNameStr = parseStringExpression();
 
   if (fileNameStr.length() == 0) {
-    Serial.println("SYNTAX ERROR: File name expected");
+    println("SYNTAX ERROR: File name expected");
     return;
   }
 
@@ -1793,18 +2649,16 @@ void cmd_delete() {
   if (SD.exists(fileName)) {
     // 3. Datei löschen
     if (SD.remove(fileName)) {
-      Serial.print("File ");
-      Serial.print(fileName);
-      Serial.println(" deleted.");
+      print("File ");
+      print(fileName);
+      println(" deleted.");
     } else {
-      Serial.println("ERROR: Could not delete file.");
+      println("ERROR: Could not delete file.");
     }
   } else {
-    Serial.print("FILE NOT FOUND: ");
-    Serial.println(fileName);
+    print("FILE NOT FOUND: ");
+    println(fileName);
   }
-
-  Serial.println("READY.");
 }
 
 void cmd_copy() {
@@ -1813,7 +2667,7 @@ void cmd_copy() {
 
   spaces();
   if (*txtpos != ',') {
-    Serial.println("SYNTAX ERROR: Komma erwartet (COPY src, dest)");
+    println("SYNTAX ERROR: Komma erwartet (COPY src, dest)");
     return;
   }
   txtpos++; // Komma überspringen
@@ -1823,7 +2677,7 @@ void cmd_copy() {
   if (srcName == "" || destName == "") return;
 
   if (!SD.exists(srcName.c_str())) {
-    Serial.print("FILE NOT FOUND: "); Serial.println(srcName);
+    print("FILE NOT FOUND: "); println(srcName);
     return;
   }
 
@@ -1834,7 +2688,7 @@ void cmd_copy() {
   File destFile = SD.open(destName.c_str(), FILE_WRITE);
 
   if (srcFile && destFile) {
-    Serial.print("Copying "); Serial.print(srcName); Serial.print(" to "); Serial.println(destName);
+    print("Copying "); print(srcName); print(" to "); println(destName);
 
     // Puffer für schnelles Kopieren (Teensy hat genug RAM)
     uint8_t buffer[512];
@@ -1845,9 +2699,8 @@ void cmd_copy() {
 
     destFile.close();
     srcFile.close();
-    Serial.println("READY.");
   } else {
-    Serial.println("ERROR: Could not open files for copying.");
+    println("ERROR: Could not open files for copying.");
     if (srcFile) srcFile.close();
     if (destFile) destFile.close();
   }
@@ -1884,8 +2737,8 @@ String get_string_array_value() {
     int i = findArray(v1, v2, true);
 
     if (i == -1) {
-      Serial.print("STRING ARRAY NOT DIMENSIONED: ");
-      Serial.println(getVarName(v1, v2)); // Schönerer Error mit vollem Namen
+      print("STRING ARRAY NOT DIMENSIONED: ");
+      println(getVarName(v1, v2)); // Schönerer Error mit vollem Namen
       isRunning = false; return "";
     }
 
@@ -1895,7 +2748,7 @@ String get_string_array_value() {
     // Sicherheitscheck
     int totalSize = allArrays[i].dimX * allArrays[i].dimY * allArrays[i].dimZ;
     if (idx >= totalSize || idx < 0) {
-      Serial.println("STRING ARRAY INDEX OUT OF BOUNDS");
+      println("STRING ARRAY INDEX OUT OF BOUNDS");
       isRunning = false; return "";
     }
 
@@ -1911,6 +2764,7 @@ double get_array_value_factor() {
   // gerade in factor() oder getCommandToken() ermittelt hat.
   int v1 = vIdx1;
   int v2 = vIdx2;
+  //println(isStringVar);
   bool sVar = isStringVar;
 
   if (*txtpos == '(') {
@@ -1937,8 +2791,8 @@ double get_array_value_factor() {
     int i = findArray(v1, v2, sVar);
 
     if (i == -1) {
-      Serial.print("ARRAY NOT DIMENSIONED: ");
-      Serial.println(getVarName(v1, v2)); // Zeigt z.B. "OX" statt nur "O"
+      print("ARRAY NOT DIMENSIONED: ");
+      println(getVarName(v1, v2)); // Zeigt z.B. "OX" statt nur "O"
       isRunning = false; return 0;
     }
 
@@ -1948,7 +2802,7 @@ double get_array_value_factor() {
     // Sicherheitscheck
     int totalSize = allArrays[i].dimX * allArrays[i].dimY * allArrays[i].dimZ;
     if (idx >= totalSize || idx < 0) {
-      Serial.println("ARRAY INDEX OUT OF BOUNDS");
+      println("ARRAY INDEX OUT OF BOUNDS");
       isRunning = false; return 0;
     }
 
@@ -1959,62 +2813,7 @@ double get_array_value_factor() {
   // Wenn keine Klammer da ist, ist es eine normale Variable
   return variables[v1][v2];
 }
-/*
-  void set_array_value(int v1, int v2, bool isString) {
-  // Wir stehen am Anfang der Klammer '('
-  txtpos++; // Überspringe '('
 
-  int x = (int)expression();
-  int y = 0, z = 0;
-
-  if (*txtpos == ',') {
-    txtpos++;
-    y = (int)expression();
-  }
-  if (*txtpos == ',') {
-    txtpos++;
-    z = (int)expression();
-  }
-
-  if (*txtpos == ')') {
-    txtpos++;
-  } else {
-    isRunning = false; return;
-  }
-
-  spaces();
-  if (*txtpos == '=') {
-    txtpos++;
-
-    // Suche das Array mit beiden Indizes (v1, v2)
-    int i = findArray(v1, v2, isString);
-
-    if (i == -1) {
-      Serial.print("ARRAY NOT DIMENSIONED: ");
-      Serial.println(getVarName(v1, v2));
-      isRunning = false;
-      return;
-    }
-
-    // Index berechnen
-    int idx = x + (y * allArrays[i].dimX) + (z * allArrays[i].dimX * allArrays[i].dimY);
-
-    // Sicherheitscheck gegen Buffer Overflow
-    int totalSize = allArrays[i].dimX * allArrays[i].dimY * allArrays[i].dimZ;
-    if (idx >= totalSize || idx < 0) {
-      Serial.println("ARRAY INDEX OUT OF BOUNDS");
-      isRunning = false; return;
-    }
-
-    // Wert schreiben
-    if (isString) {
-      allArrays[i].strData[idx] = parseStringExpression();
-    } else {
-      allArrays[i].numData[idx] = expression();
-    }
-  }
-  }
-*/
 int findArray(int v1, int v2, bool isString) {
   for (int i = 0; i < arrayCount; i++) {
     if (allArrays[i].vIdx1 == v1 && allArrays[i].vIdx2 == v2 && allArrays[i].isString == isString) {
@@ -2023,17 +2822,10 @@ int findArray(int v1, int v2, bool isString) {
   }
   return -1;
 }
-/*
-  int findArray(char name, bool isString) {
-  for (int i = 0; i < arrayCount; i++) {
-    if (allArrays[i].name == name && allArrays[i].isString == isString) {
-      return i;
-    }
-  }
-  return -1; // Nicht gefunden
-  }
-*/
+
 void cmd_dim() {
+  bool sVar = false;
+
   do {
     spaces();
     if (!isalpha(*txtpos)) {
@@ -2046,12 +2838,14 @@ void cmd_dim() {
     vIdx2 = 0;
     txtpos++;
 
-    if (isalnum(*txtpos) && *txtpos != '$') {
+    if (isalnum(*txtpos) && *txtpos != '(' && *txtpos != '$') {
       vIdx2 = getVIdx2(*txtpos);
       txtpos++;
     }
 
-    bool sVar = false;
+    int id1 = vIdx1;        //Variablen-Index sichern, da expression() sie verändert
+    int id2 = vIdx2;
+
     if (*txtpos == '$') {
       sVar = true;
       txtpos++;
@@ -2089,8 +2883,8 @@ void cmd_dim() {
     int totalSize = sizeX * sizeY * sizeZ;
 
     if (arrayCount < MAX_ARRAYS) {
-      allArrays[arrayCount].vIdx1 = vIdx1;
-      allArrays[arrayCount].vIdx2 = vIdx2;
+      allArrays[arrayCount].vIdx1 = id1;
+      allArrays[arrayCount].vIdx2 = id2;
       allArrays[arrayCount].isString = sVar;
       allArrays[arrayCount].dimX = sizeX;
       allArrays[arrayCount].dimY = sizeY;
@@ -2109,151 +2903,23 @@ void cmd_dim() {
     // --- DER SCHLÜSSEL: Wenn ein Komma folgt, loope weiter ---
   } while (*txtpos == ',' && (txtpos++));
 }
-/*
-  void cmd_dim() {
-  spaces();
-  if (!isalpha(*txtpos)) {
-    isRunning = false;
-    return;
-  }
 
-  char name = toupper(*txtpos);
-  txtpos++;
-
-  bool sVar = (*txtpos == '$');
-  if (sVar) txtpos++;
-
-  if (*txtpos != '(') {
-    isRunning = false;
-    return;
-  }
-  txtpos++;
-
-  // Dimensionen einlesen (Standardmäßig 0, falls nicht angegeben)
-  int d1 = (int)expression();
-  int d2 = 0;
-  int d3 = 0;
-
-  if (*txtpos == ',') {
-    txtpos++;
-    d2 = (int)expression();
-  }
-  if (*txtpos == ',') {
-    txtpos++;
-    d3 = (int)expression();
-  }
-
-  if (*txtpos == ')') txtpos++;
-  else {
-    isRunning = false;
-    return;
-  }
-
-  // Prüfen, ob Array schon existiert (dann erst löschen)
-  int existing = findArray(name, sVar);
-  if (existing != -1) {
-    // Hier könnte man den alten Speicher mit free/delete freigeben
-  }
-
-  // Speicher reservieren (Größe + 1, da BASIC-Arrays bei 0 beginnen)
-  int sizeX = d1 + 1;
-  int sizeY = d2 + 1;
-  int sizeZ = d3 + 1;
-  int totalSize = sizeX * sizeY * sizeZ;
-
-  allArrays[arrayCount].name = name;
-  allArrays[arrayCount].isString = sVar;
-  allArrays[arrayCount].dimX = sizeX;
-  allArrays[arrayCount].dimY = sizeY;
-  allArrays[arrayCount].dimZ = sizeZ;
-
-  if (sVar) {
-    allArrays[arrayCount].numData = NULL;
-    allArrays[arrayCount].strData = new String[totalSize];
-  } else {
-    allArrays[arrayCount].strData = NULL;
-    allArrays[arrayCount].numData = (double*)malloc(totalSize * sizeof(double));
-    for (int i = 0; i < totalSize; i++) allArrays[arrayCount].numData[i] = 0.0;
-  }
-
-  arrayCount++;
-  spaces();
-  }
-*/
-/*
-  void cmd_assignment() {
-  char varNameChar = lastVarName;
-  int targetV1 = vIdx1;
-  int targetV2 = vIdx2;
-  bool sVar = isStringVar;
-
-  spaces();
-
-  // --- FALL A: ARRAY-Zuweisung (z.B. S$(1,2,3) = A$ + "!") ---
-  if (*txtpos == '(') {
-    txtpos++;
-
-    int x = (int)expression();
-    int y = 0, z = 0;
-    if (*txtpos == ',') {
-      txtpos++;
-      y = (int)expression();
-    }
-    if (*txtpos == ',') {
-      txtpos++;
-      z = (int)expression();
-    }
-
-    if (*txtpos == ')') {
-      txtpos++;
-    } else {
-      syntaxerror("MISSING )"); return;
-    }
-
-    spaces();
-    if (*txtpos == '=') {
-      txtpos++;
-      int i = findArray(targetV1, targetV2, sVar); //int i = findArray(varNameChar, sVar);
-      if (i == -1) {
-        Serial.print("ARRAY NOT DIMENSIONED: "); Serial.println(varNameChar);
-        isRunning = false; return;
-      }
-
-      int idx = x + (y * allArrays[i].dimX) + (z * allArrays[i].dimX * allArrays[i].dimY);
-      int totalSize = allArrays[i].dimX * allArrays[i].dimY * allArrays[i].dimZ;
-      if (idx >= totalSize || idx < 0) {
-        syntaxerror("ARRAY INDEX OUT OF BOUNDS"); return;
-      }
-
-      if (sVar) {
-        // Hier wird jetzt die rekursive Addition unterstützt!
-        allArrays[i].strData[idx] = parseStringExpression();
-      } else {
-        allArrays[i].numData[idx] = expression();
-      }
-    }
-  }
-  // --- FALL B: NORMALE Variable (z.B. A$ = "HI " + B$) ---
-  else if (*txtpos == '=') {
-    txtpos++;
-    if (sVar) {
-      // Nutzt die neue parseStringExpression mit "+" Support
-      stringVars[targetV1][targetV2] = parseStringExpression();
-    } else {
-      variables[targetV1][targetV2] = expression();
-    }
-  }
-  else {
-    syntaxerror("SYNTAX ERROR IN ASSIGNMENT");
-  }
-  }
-
-*/
 void cmd_assignment() {
   // Wir nutzen die vom Parser (getCommandToken) gesetzten Indizes
   int targetV1 = vIdx1;
   int targetV2 = vIdx2;
   bool sVar = isStringVar;
+
+  // Schneller Check: Ist es eine einfache Zuweisung?
+  if (*txtpos == '=') {
+    txtpos++;
+    if (isStringVar) {
+      stringVars[targetV1][targetV2] = parseStringExpression();
+    } else {
+      variables[targetV1][targetV2] = expression();
+    }
+    return; // Sofort raus!
+  }
 
   spaces();
 
@@ -2275,7 +2941,7 @@ void cmd_assignment() {
     if (*txtpos == ')') {
       txtpos++;
     } else {
-      syntaxerror("MISSING )"); return;
+      syntaxerror(syntaxmsg); return;
     }
 
     spaces();
@@ -2286,8 +2952,8 @@ void cmd_assignment() {
       int i = findArray(targetV1, targetV2, sVar);
 
       if (i == -1) {
-        Serial.print("ARRAY NOT DIMENSIONED: ");
-        Serial.println(getVarName(targetV1, targetV2)); // Zeigt jetzt "OX" statt nur "O"
+        syntaxerror(dimmsg);
+        //println(getVarName(targetV1, targetV2)); // Zeigt jetzt "OX" statt nur "O"
         isRunning = false; return;
       }
 
@@ -2295,7 +2961,7 @@ void cmd_assignment() {
       int totalSize = allArrays[i].dimX * allArrays[i].dimY * allArrays[i].dimZ;
 
       if (idx >= totalSize || idx < 0) {
-        syntaxerror("ARRAY INDEX OUT OF BOUNDS"); return;
+        syntaxerror(dimmsg); return;
       }
 
       if (sVar) {
@@ -2315,7 +2981,7 @@ void cmd_assignment() {
     }
   }
   else {
-    syntaxerror("SYNTAX ERROR IN ASSIGNMENT");
+    syntaxerror(syntaxmsg);
   }
 }
 
@@ -2330,6 +2996,72 @@ void skip_to_else() {
   *txtpos = '\0';                                               // Kein ELSE in dieser Zeile gefunden -> Zeile beenden
 }
 
+void skip_to_wend() {
+  int nesting = 1; // Wir starten IN einer While-Schleife
+
+  while (currentLineIndex < lineCount) {
+    spaces();
+
+    // Zeilenende erreicht? Gehe zur nächsten Zeile
+    if (*txtpos == '\0') {
+      currentLineIndex++;
+      if (currentLineIndex >= lineCount) break;
+      txtpos = program[currentLineIndex].text;
+      continue;
+    }
+
+    const char* pBefore = txtpos;
+    int t = scanKeyword(commands);
+
+    if (t == TOKEN_WHILE) {
+      nesting++; // Innere Schleife gefunden
+    }
+    else if (t == TOKEN_WEND) {
+      nesting--; // Ende einer Schleife gefunden
+      if (nesting == 0) {
+        // Das passende WEND zur ursprünglichen WHILE-Schleife gefunden
+        spaces();
+        return;
+      }
+    }
+
+    // Wenn kein Keyword erkannt wurde oder wir noch tiefer verschachtelt sind
+    if (pBefore == txtpos) {
+      txtpos++;
+    }
+  }
+
+  // Fehlerfall: WEND wurde nie gefunden
+  isRunning = false;
+  println("Error: WHILE without WEND");
+}
+
+/*
+  void skip_to(int target1) {
+  // Wir suchen nur noch nach einem Ziel (normalerweise TOKEN_ELSE)
+  while (currentLineIndex < lineCount) {
+    spaces();
+
+    // Wenn die Zeile zu Ende ist, haben wir das implizite Ende des IF erreicht
+    if (*txtpos == '\0' || *txtpos == '\n' || *txtpos == '\r') {
+      return;
+    }
+
+    int t = scanKeyword(commands);
+
+    // WICHTIG: WHILE muss weiterhin korrekt übersprungen werden
+    if (t == TOKEN_WHILE) {
+      skip_to_wend(); // Du brauchst eine separate Funktion für WEND
+    }
+    else if (t == target1) {
+      return; // ELSE gefunden!
+    }
+
+    // Falls kein Keyword erkannt wurde, ein Zeichen weitergehen
+    if (*txtpos != '\0') txtpos++;
+  }
+  }
+*/
 void skip_to(int target1, int target2) {
   int nesting = 0;
   while (currentLineIndex < lineCount) {
@@ -2344,35 +3076,33 @@ void skip_to(int target1, int target2) {
     const char* pBefore = txtpos;
     int t = scanKeyword(commands);
 
-    if (t == TOKEN_IF || t == TOKEN_WHILE) {
+    if (t == TOKEN_WHILE) {
       nesting++;
     }
-    else if (t == TOKEN_ENDIF || t == TOKEN_WEND) {
+    else if (t == TOKEN_WEND) {
       if (nesting > 0) {
         nesting--;
       } else {
         if (t == target1 || t == target2) return;
       }
     }
-    else if (t == TOKEN_ELSE && nesting == 0) {
+    /*
+      else if (t == TOKEN_ELSE && nesting == 0) {
       if (t == target1 || t == target2) return;
-    }
+      }*/
 
     if (pBefore == txtpos) txtpos++;
   }
 }
+
 //**************************************** While/Wend ********************************************************************
 void cmd_while() {
   spaces();
-  // 1. Position der Bedingung für den Stack merken
-  const char* conditionStart = txtpos;
-
-  // 2. Bedingung auswerten (txtpos wandert hinter die Bedingung)
-  bool condition = relation();
+  const char* conditionStart = txtpos;                                                          // 1. Position der Bedingung für den Stack merken
+  bool condition = relation();                                                                  // 2. Bedingung auswerten (txtpos wandert hinter die Bedingung)
 
   if (condition) {
-    // PRÜFEN: Sind wir bereits in dieser Schleife (Rücksprung von WEND)?
-    bool alreadyOnStack = false;
+    bool alreadyOnStack = false;                                                                // Prüfung bereits in dieser Schleife (Rücksprung von WEND)?
     if (whileStackPtr > 0 && whileStack[whileStackPtr - 1].textPos == conditionStart) {
       alreadyOnStack = true;
     }
@@ -2384,45 +3114,40 @@ void cmd_while() {
         whileStackPtr++;
       } else {
         isRunning = false;
-        Serial.println("ERR: WHILE STACK OVERFLOW");
+        syntaxerror(whilewendmsg);
         return;
       }
     }
 
-    // REST DER ZEILE IGNORIEREN (verhindert Assignment-Fehler)
-    while (*txtpos != '\0' && *txtpos != ':') txtpos++;
+    while (*txtpos != '\0' && *txtpos != ':') txtpos++;                                         // REST DER ZEILE IGNORIEREN (verhindert Assignment-Fehler)
 
   } else {
-    // BEDINGUNG FALSCH: Den gesamten Block bis zum WEND überspringen
-    skip_to(TOKEN_WEND, TOKEN_WEND);
+    skip_to(TOKEN_WEND, TOKEN_WEND);                                                            // BEDINGUNG FALSCH: Den gesamten Block bis zum WEND überspringen
 
-    // Wir stehen jetzt am WEND. Wir müssen zur NÄCHSTEN Zeile (z.B. Zeile 60)
-    spaces();
+    spaces();                                                                                   // Wir stehen jetzt am WEND. Wir müssen zur NÄCHSTEN Zeile
     if (*txtpos == '\0') {
       currentLineIndex++;
       if (currentLineIndex < lineCount) {
         txtpos = program[currentLineIndex].text;
       } else {
-        isRunning = false; // Ende des Programms
+        isRunning = false;
       }
     } else if (*txtpos == ':') {
-      txtpos++; // Falls nach dem WEND noch ein Befehl in der Zeile steht
+      txtpos++;
     }
 
-    // Falls die Schleife auf dem Stack war: Jetzt entfernen
-    if (whileStackPtr > 0 && whileStack[whileStackPtr - 1].textPos == conditionStart) {
+    if (whileStackPtr > 0 && whileStack[whileStackPtr - 1].textPos == conditionStart) {         // Schleife auf dem Stack  entfernen
       whileStackPtr--;
     }
-
-    jumped = true; // Dem Haupt-Loop signalisieren: Zeiger ist gesetzt
+    jumped = true;                                                                              // Dem Haupt-Loop signalisieren: Zeiger ist gesetzt
   }
 }
+
+
 void cmd_wend() {
   if (whileStackPtr > 0) {
-    // Springe zurück zum WHILE-Befehl
-    currentLineIndex = whileStack[whileStackPtr - 1].lineIndex;
-    txtpos = program[currentLineIndex].text; // Wir springen zum ANFANG der Zeile
-    // (Oder exakt zum Wort WHILE, falls du textPos dort gespeichert hast)
+    currentLineIndex = whileStack[whileStackPtr - 1].lineIndex;                                 // Springe zurück zum WHILE-Befehl
+    txtpos = program[currentLineIndex].text;                                                    // Wir springen zum ANFANG der Zeile (Oder exakt zum Wort WHILE, falls du textPos dort gespeichert hast)
     jumped = true;
   } else {
     isRunning = false; syntaxerror("ERR: WEND WITHOUT WHILE");
@@ -2442,69 +3167,320 @@ void cmd_dwrite() {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, state);
 
-    // Optional: Kurze Info im Serial Monitor
-    // Serial.print("Pin "); Serial.print(pin); Serial.println(state ? " HIGH" : " LOW");
   } else {
-    syntaxerror("KOMMA ERWARTET: DWRITE pin, state");
+    syntaxerror(syntaxmsg);
   }
 }
 
 //*********************************************** Pause-Befehl ****************************************************
 void cmd_pause() {
   spaces();
-
-  // Die Millisekunden einlesen (kann auch eine Rechnung sein, z.B. PAUSE 100*5)
-  int ms = (int)expression();
+  int ms = (int)expression();                                                       // Die Millisekunden einlesen (kann auch eine Rechnung sein, z.B. PAUSE 100*5)
 
   if (ms > 0) {
-    // Kurze Sicherheitsprüfung für den Break-Check während der Pause
-    // Bei sehr langen Pausen (z.B. PAUSE 10000) wäre der Teensy sonst "taub"
     if (ms > 100) {
       unsigned long start = millis();
       while (millis() - start < (unsigned long)ms) {
-        // Prüfen, ob der User STRG+C (ASCII 3) gesendet hat, um abzubrechen
-        if (Serial.available() && Serial.read() == 3) {
+
+        if (break_marker) {
           isRunning = false;
-          Serial.println("\nBREAK.");
+          println("BREAK!");
           return;
         }
-        yield(); // Dem Teensy-System Zeit für Hintergrundaufgaben geben
+        yield();
       }
     } else {
-      delay(ms); // Für sehr kurze Pausen reicht das Standard-Delay
+      delay(ms);
     }
   }
 }
 //************************************************************************* MEM-Befehl ****************************************************************************************
-void cmd_mem() {
+double get_mem(int m) {
   int usedLines = lineCount;
-  int freeLines = MAX_LINES - lineCount; // MAX_LINES ist deine definierte Obergrenze
+  int freeLines = MAX_LINES - lineCount;                                            // MAX_LINES ist deine definierte Obergrenze
+  long totalCapacity = MAX_LINES * sizeof(BasicLine);                               // Jede Zeile verbraucht sizeof(BasicLine)(84bytes)
+  long usedBytes = lineCount * sizeof(BasicLine);
+  long freeBytes = totalCapacity - usedBytes;
 
-  // Berechnung des verbrauchten Speichers im Programm-Array
-  long usedBytes = 0;
-  for (int i = 0; i < lineCount; i++) {
-    usedBytes += strlen(program[i].text);
+  switch (m) {
+    case 1: return usedLines;
+    case 2: return freeLines;
+    case 3: return totalCapacity;
+    case 4: return usedBytes;
+    case 5: return freeBytes;
+    default:
+      break;
+      return 0;
   }
-
-  Serial.println("--- BASIC PROGRAM MEMORY ---");
-  Serial.print("Zeilen belegt: "); Serial.print(usedLines);
-  Serial.print(" / Frei: "); Serial.println(freeLines);
-
-  Serial.print("Speicher Text: "); Serial.print(usedBytes);
-  Serial.println(" Bytes belegt.");
-
-  // Dynamischer Speicher (für deine 3D-Arrays)
-  Serial.print("Freier RAM (Heap): ");
-  Serial.print(get_free_ram()); // Die Funktion von oben
-  Serial.println(" Bytes");
-
-  Serial.println("READY.");
 }
 
-void Basic_interpreter() {
-  int lineNumber;
+void cmd_mem() {
+  char buffer[30];
+  printmsg("--- BASIC PROGRAM MEMORY ---", 1);
+  itoa(get_mem(1), buffer, 10);
+  printmsg("Zeilen belegt: ", 0); printmsg(buffer, 0);
+  ltoa(get_mem(2), buffer, 10);
+  printmsg(" / Frei: ", 0); printmsg(buffer, 1);
+  ltoa(get_mem(3), buffer, 10);
+  printmsg("Basic-RAM: ", 0); printmsg(buffer, 1);
+  ltoa(get_mem(4), buffer, 10);
+  printmsg("Basic-RAM: ", 0); printmsg(buffer, 0);
+  printmsg(" Bytes belegt.", 1);
+
+  // Dynamischer Speicher (für deine 3D-Arrays)
+  printmsg("Freier Basic-RAM: ", 0);
+  dtostrf(get_mem(5), 6, 0,  buffer);
+  //dtostrf(external_psram_size *1024 *1024,12,0,buffer);
+  printmsg(buffer, 0); // Die Funktion von oben
+  printmsg(" Bytes", 1);
+}
+
+static int Test_char(char az)
+{ //println(txtpos);
+  // check for char az
+  if (*txtpos != az)
+  {
+    syntaxerror(syntaxmsg);
+    return 1;
+  }
+  txtpos++;
+  spaces();
+  //println(txtpos);
+  return 0;
+}
+
+void cmd_settime()
+{ int tagzeit[7];
+  spaces();
+  tagzeit[0] = abs(int(expression()));         //nur ganze Zahlen
+  for (int i = 1; i < 6; i++)
+  {
+    if (Test_char(',')) {
+      syntaxerror(syntaxmsg);
+      return;
+    }
+    tagzeit[i] = abs(int(expression()));         //nur ganze Zahlen
+  }
+  setTime(tagzeit[0], tagzeit[1], tagzeit[2], tagzeit[3], tagzeit[4], tagzeit[5]);                   //h, mi, s, d, m, y);
+  Teensy3Clock.set(now());
+  spaces();
+}
+
+//########################################################## Memory-Dump #################################################
+/*void hexMonitor(uint8_t* startAddr) {
+  int zeilen;
+
+  if (startAddr == NULL) {
+    println("Error: Null Pointer");
+    return;
+  }
+  while (1) {
+    uint32_t relativeAddr = (uint32_t)((uintptr_t)startAddr - 0x70000000);
+    vprintf("%06X: ", relativeAddr);
+    // 2. 16 Bytes in HEX
+    for (int j = 0; j < 8; j++) {
+      vprintf("%02X ", startAddr[j]);
+      print("   ");
+    }
+    // 3. 16 Bytes als ASCII
+    for (int j = 0; j < 8; j++) {
+
+      char c = startAddr[j];
+      print((c >= 32 && c <= 126) ? c : '.');
+
+    }
+    println("|");
+    startAddr += 8;
+
+    zeilen++;
+    if (zeilen == 20) {
+      if (waitkey()) break;
+    }
+    zeilen = 0;
+  }
+  }
+*/
+void hexMonitor(uint8_t* startAddr) {
+  int zeilen = 0; // 1. Initialisieren!
+
+  if (startAddr == NULL) {
+    println("Error: Null Pointer");
+    return;
+  }
 
   while (1) {
+    uint32_t relativeAddr = (uint32_t)((uintptr_t)startAddr - 0x70000000);
+    vprintf("%06X: ", relativeAddr);
+
+    for (int j = 0; j < 8; j++) {
+      vprintf("%02X ", startAddr[j]);
+    }
+    print("   ");
+
+    for (int j = 0; j < 8; j++) {
+      char c = startAddr[j];
+      print((c >= 32 && c <= 126) ? c : '.');
+    }
+    println("|");
+
+    startAddr += 8;
+    zeilen++;
+
+    if (zeilen >= 20) { // 2. Check gegen 20
+      if (waitkey()) break; // Falls waitkey true (z.B. ESC), beenden
+      zeilen = 0; // 3. NUR HIER zurücksetzen!
+    }
+  }
+}
+
+
+void cmd_dump() {
+  uint32_t offset;
+  spaces();
+
+  // Wenn keine Eingabe erfolgt, fange bei 0 an
+  if (*txtpos == '\0' || *txtpos == '\r' || *txtpos == '\n') {
+    offset = 0;
+  } else {
+    offset = expression();
+  }
+
+  // Validierung: Offset darf maximal 8MB (0x7FFFFF) sein
+  if (offset <= 0x7FFFFF) {
+    // Addiere die PSRAM Basis-Adresse 0x70000000 zum Offset
+    uint8_t* psramAddr = (uint8_t*)(0x70000000 + offset);
+
+    // Den Monitor mit der berechneten Adresse aufrufen
+    hexMonitor(psramAddr);
+  } else {
+    syntaxerror(memorymsg);//println("Error: Offset too large! Max is 0x7FFFFF (8MB).");
+  }
+}
+
+void cmd_defn() {
+  spaces();
+  if (!isalpha(*txtpos)) {
+    // Fehler: Funktionsname muss A-Z sein
+    isRunning = false;
+    return;
+  }
+
+  char fName = toupper(*txtpos++);
+  int idx = fName - 'A';
+  function[idx].name = fName;
+  function[idx].paramCount = 0;
+
+  // Parameter einlesen: (W,X,Y,Z)
+  if (*txtpos == '(') {
+    txtpos++;
+    while (*txtpos != ')' && *txtpos != '\0' && function[idx].paramCount < 4) {
+      spaces();
+      if (isalpha(*txtpos)) {
+        function[idx].params[function[idx].paramCount++] = toupper(*txtpos++);
+      }
+      spaces();
+      if (*txtpos == ',') txtpos++;
+    }
+    if (*txtpos == ')') txtpos++;
+  }
+
+  spaces();
+  if (*txtpos == '=') {
+    txtpos++;
+    // Hier speichern wir den Zeiger auf den Beginn der Formel
+    function[idx].formula = txtpos;
+  }
+
+  // WICHTIG: Die Formel in dieser Zeile nicht ausführen!
+  // Wir setzen txtpos ans Ende der Zeile.
+  txtpos = (char*)"";
+}
+
+
+void cmd_pset() {
+  spaces();
+
+  int px = (int)expression(); // X-Koordinate parsen
+
+  if (*txtpos == ',') txtpos++;
+  else {
+    syntaxerror(nullptr);
+    return;
+  }
+
+  int py = (int)expression(); // Y-Koordinate parsen
+
+  uint8_t col = 255; // Standardfarbe Weiß, falls keine Farbe angegeben wird
+  if (*txtpos == ',') {
+    txtpos++;
+    col = (uint8_t)expression(); // Farbe parsen (0-255)
+  }
+
+  // Sicherheitscheck: Nur zeichnen, wenn innerhalb der Bildschirmgrenzen
+  //if (px >= 0 && px < fb_width && py >= 0 && py < fb_height) {
+  vga.drawPixel(px, py, col);
+  //}
+
+}
+
+
+void cmd_tron(unsigned long wait, int index) {
+  print("<");
+  print(program[index].number);
+  print(">");
+  delay(wait);
+}
+
+void drawBMP(const char* filename, int x, int y) {
+  File bmpFile = SD.open(filename);
+  if (!bmpFile) {
+    println("FILE NOT FOUND");
+    return;
+  }
+
+  // Sehr vereinfachter Header-Check (Offset 18 = Breite, 22 = Höhe)
+  bmpFile.seek(18);
+  int32_t width = bmpFile.read() | (bmpFile.read() << 8);
+  bmpFile.seek(22);
+  int32_t height = bmpFile.read() | (bmpFile.read() << 8);
+  bmpFile.seek(10); // Offset zum Pixelspeicher
+  uint32_t offset = bmpFile.read() | (bmpFile.read() << 8);
+
+  bmpFile.seek(offset);
+
+  // Pixeldaten lesen und zeichnen (Teensy ist schnell genug für Einzelpixel)
+  for (int i = height - 1; i >= 0; i--) {
+    for (int j = 0; j < width; j++) {
+      uint8_t b = bmpFile.read();
+      uint8_t g = bmpFile.read();
+      uint8_t r = bmpFile.read();
+
+      vga.drawPixel(x + j, y + i, VGA_RGB(r, g, b));
+    }
+  }
+  bmpFile.close();
+  vga.waitSync();
+}
+
+
+Params getParams(int n) {
+  Params p;
+  for (int i = 0; i < n; i++) {
+    p.val[i] = (int)expression();
+    if (i < n - 1 && *txtpos == ',') txtpos++;
+  }
+  return p; // Die Struktur wird als Ganzes zurückgegeben
+}
+
+
+
+//#################################################################################### Hauptprogrammschleife ###########################################################################################
+void Basic_interpreter() {
+  int lineNumber;
+  unsigned long tron_delay;
+
+  while (1) {
+    myusb.Task();
 
     if (!isRunning) {                             // --- 1. Direktmodus ---
       getln(1);
@@ -2521,32 +3497,35 @@ void Basic_interpreter() {
     } else {
       if (currentLineIndex >= lineCount) {
         isRunning = false;
-        Serial.println("READY.");
         continue;
       }
       if (!jumped) {
         txtpos = program[currentLineIndex].text;
+
       }
 
     }
 
-    //Serial.print("Lade Zeile: ");
-    //Serial.println(program[currentLineIndex].number);
 
     while (*txtpos != 0) {                     // --- 2. ZEILEN-SCHLEIFE ---
 
       jumped = false;
+      myusb.Task();
 
-      if (Serial.available() && Serial.peek() == 3) {
-        Serial.read();
+      if (break_marker) {
+        line_terminator();
+        print("Break in Line ");
+        println(program[currentLineIndex].number);           //Zeilennummer ausgeben
+        currentLineIndex = 0;
+        break_marker = false;
         isRunning = false;
-        Serial.println("\nBREAK.");
-        break;
       }
+
       if (*txtpos == ':') {
         txtpos++;
         continue;
       }
+      spaces();
 
       int token = getCommandToken();
 
@@ -2554,11 +3533,11 @@ void Basic_interpreter() {
 
       switch (token) {
         case TOKEN_PRINT: cmd_print(); break;
-        case TOKEN_LIST:  doList();    break;
+        case TOKEN_LIST:  cmd_list();    break;
         case TOKEN_RUN:   cmd_run();   break;
         case TOKEN_NEW:   cmd_new();   break;
         case TOKEN_VARS:  doVars();    break;
-        case TOKEN_STOP:  isRunning = false; Serial.println("END."); break;
+        case TOKEN_STOP:  isRunning = false; println("END."); break;
         case TOKEN_REM:   skip_line(); break;
         case TOKEN_FILES:
         case TOKEN_DIR:  cmd_files(); break;
@@ -2573,38 +3552,60 @@ void Basic_interpreter() {
         case TOKEN_DWRITE: cmd_dwrite(); break;
         case TOKEN_PAUSE:  cmd_pause();  break;
         case TOKEN_MEM: cmd_mem(); break;
+        case TOKEN_ON:  cmd_on();  break;
+        case TOKEN_STIME: cmd_settime(); break;
+        case TOKEN_DUMP: cmd_dump(); break;
+        case TOKEN_DEFN: cmd_defn(); break;
+        case TOKEN_CLS:  cmd_cls(); break;
+        case TOKEN_COL: cmd_color(); break;
+        case TOKEN_PSET:  cmd_pset(); break;
+        case TOKEN_EDIT: cmd_edit(); break;
+        case TOKEN_PEN: {
+            int c = (int)expression();
+            fbcolor(c, 0);
+          }
+          break;
+        case TOKEN_TRON: {
+            if (*txtpos == '\0') tron_delay = 0;
+            else tron_delay = (unsigned long)expression();
+            tron_marker = true;
+          }
+          break;
+
+        case TOKEN_TROFF: {
+            tron_marker = false;
+            tron_delay = 0;
+          }
+          break;
         case TOKEN_ELSE: {
-            skip_to(TOKEN_ENDIF, TOKEN_ENDIF);
-            spaces();
-            if (*txtpos == '\0') {
-              currentLineIndex++;
-              if (currentLineIndex < lineCount) {
-                txtpos = program[currentLineIndex].text;
-                jumped = true;
-              } else {
-                isRunning = false;
+            if (last_if_result) {
+              if (tron_marker && isRunning) {                                                     // TRON-Funktion nur im RUN-Modus
+                cmd_tron(tron_delay, currentLineIndex);
               }
+              currentLineIndex++; // IF war wahr, also ELSE-Zeile komplett überspringen
+              txtpos = program[currentLineIndex].text;
+              jumped = true;
             }
           }
           break;
-        case TOKEN_ENDIF: break;                                                      //dient nur als Sprungmarke für skip_to
+
         case TOKEN_WHILE: cmd_while(); break;
         case TOKEN_WEND:  cmd_wend();  break;
         case TOKEN_GOTO: {
-            if (getFunctionToken() == TOKEN_NUMBER) {                                 // GOTO erwartet eine Nummer, getFunctionToken() kann diese lesen
-              int targetNum = (int)lastNumberValue;
-              if (jumpTo(targetNum)) {
-                txtpos = program[currentLineIndex].text;
-                jumped = true;
-              } else {
-                printmsg(wronglinenr, 0);
-                Serial.println(targetNum);
-                Serial.print("in Line:");
-                Serial.println(program[currentLineIndex].number);
-                isRunning = false;
-                *txtpos = '\0';
-              }
+            int target = (int)expression();
+            if (jumpTo(target)) {
+              txtpos = program[currentLineIndex].text;
+              jumped = true;
+            } else {
+              printmsg(wronglinenr, 0);
+              println(target);
+              print("in Line:");
+              println(program[currentLineIndex].number);
+              isRunning = false;
+              txtpos = '\0';
             }
+
+            //}
             break;
           }
 
@@ -2612,33 +3613,22 @@ void Basic_interpreter() {
         case TOKEN_VARIABLE: cmd_assignment(); break;
 
         case TOKEN_IF: {
-            bool condition = relation();
+            last_if_result = relation(); // Ergebnis für das ELSE speichern
             if (getCommandToken() != TOKEN_THEN) {
               isRunning = false;
               break;
             }
+            if (tron_marker && isRunning) cmd_tron(tron_delay, currentLineIndex);                                                     // TRON-Funktion nur im RUN-Modus
 
-            if (!condition) {
-              // Bedingung FALSCH: Springe zum ELSE oder ENDIF
-              skip_to(TOKEN_ELSE, TOKEN_ENDIF);
-            } else {
-              // Bedingung WAHR:
-              spaces();
-              if (*txtpos == '\0') {
-                // Zeile ist nach THEN zu Ende, wir müssen zur nächsten Zeile springen
-                currentLineIndex++;
-                if (currentLineIndex < lineCount) {
-                  txtpos = program[currentLineIndex].text;
-                  jumped = true; // Verhindert, dass der äußere Loop zurücksetzt
-                } else {
-                  isRunning = false;
-                }
-              }
-              // Falls noch was in der Zeile steht (z.B. THEN PRINT...), macht er einfach weiter
+            if (!last_if_result) {
+              currentLineIndex++; // Springe zur nächsten Zeile (wo das ELSE steht)
+              if (tron_marker && isRunning) cmd_tron(tron_delay, currentLineIndex);                                                     // TRON-Funktion nur im RUN-Modus
+              txtpos = program[currentLineIndex].text;
+              jumped = true;
             }
           }
-
           break;
+
 
         case TOKEN_FOR: {
             int t = getFunctionToken();                                               // ZUERST die Variable nach dem FOR einlesen (z.B. das 'I')
@@ -2743,11 +3733,56 @@ void Basic_interpreter() {
           cmd_restore();
           break;
 
+        case TOKEN_PIC: {
+            spaces();
+            Params lp = getParams(2);
+            if (*txtpos == ',') txtpos++;
+            String fileName = parseStringExpression();
+            drawBMP(fileName.c_str(), lp.val[0], lp.val[1]);
+            break;
+          }
+
+        case TOKEN_LINE: {
+            spaces();
+            Params lp = getParams(5);
+            vga.drawline(lp.val[0], lp.val[1], lp.val[2], lp.val[3], lp.val[4]);
+          }
+          break;
+
+        case TOKEN_RECT: {
+            spaces();
+            Params lp = getParams(5);
+            if (lp.val[4] > 0) vga.drawRect(lp.val[0], lp.val[1], lp.val[2], lp.val[3], rgbToVGA(F_COL[0], F_COL[1], F_COL[2])); // RECT(x,y,w,h,color,fill)
+            else {
+              vga.drawline(lp.val[0], lp.val[1], lp.val[2], lp.val[1], rgbToVGA(F_COL[0], F_COL[1], F_COL[2])); //quer
+              vga.drawline(lp.val[0], lp.val[1], lp.val[0], lp.val[3], rgbToVGA(F_COL[0], F_COL[1], F_COL[2])); //links runter
+              vga.drawline(lp.val[2], lp.val[1], lp.val[2], lp.val[3], rgbToVGA(F_COL[0], F_COL[1], F_COL[2])); //rechts runter
+              vga.drawline(lp.val[0], lp.val[3], lp.val[2], lp.val[3], rgbToVGA(F_COL[0], F_COL[1], F_COL[2])); //unten quer
+            }
+
+          }
+          break;
+
+        case TOKEN_CIRC: {
+            spaces();
+            Params lp = getParams(5);
+            if (lp.val[4] > 0) vga.drawfilledellipse(lp.val[0], lp.val[1], lp.val[2], lp.val[3] , rgbToVGA(F_COL[0], F_COL[1], F_COL[2]) , rgbToVGA(H_COL[0], H_COL[1], H_COL[2]));
+            else
+              vga.drawellipse(lp.val[0], lp.val[1], lp.val[2], lp.val[3], rgbToVGA(F_COL[0], F_COL[1], F_COL[2]));
+          }
+          break;
+        case TOKEN_CUR: {
+            spaces();
+            int c = (int) expression();
+            if (c > 0) cursor_on_off = true;
+            else cursor_on_off = false;
+
+          }
         case TOKEN_ERROR:
           if (strlen(txtpos) > 0) {
-            syntaxerror(syntaxmsg);//Serial.print("SYNTAX ERROR in Line: ");
-            Serial.print(program[currentLineIndex].number);
-            Serial.println(program[currentLineIndex].text);
+            syntaxerror(syntaxmsg);
+            print(program[currentLineIndex].number);
+            println(program[currentLineIndex].text);
             isRunning = false;
             *txtpos = '\0';                                                               //Wichtig sonst gibt's ne Endlosschleife bei Error
             break;
@@ -2759,58 +3794,383 @@ void Basic_interpreter() {
           break;
       }
 
-
       spaces();
 
-      // 1. Zuerst schauen, ob ein Doppelpunkt kommt (für mehrere Befehle)
       if (*txtpos == ':') {
         txtpos++;
-        continue; // Nächster Befehl in derselben Zeile
+        continue;                                                                         // Nächster Befehl in derselben Zeile
       }
 
-      // 2. Wenn ein Sprung (GOTO/NEXT/RUN) passierte: Zeile verlassen,
-      // aber NICHT hochzählen!
+      if (*txtpos != '\0') continue;                                                      // 3. Wenn die Zeile noch nicht zu Ende ist (z.B. nach THEN)
 
-      //if (jumped) break;
-
-      // 3. Wenn die Zeile noch nicht zu Ende ist (z.B. nach THEN)
-      if (*txtpos != '\0') continue;
-
-      // 4. Nur wenn wir am echten Ende (\0) sind UND nicht gesprungen wurde:
-      if (isRunning && !jumped) {
-        // Wenn wir am Ende der Zeile stehen (\0)
-        if (*txtpos == '\0') {
+      if (isRunning ) {                                                                   //Nur wenn wir am echten Ende (\0) sind UND nicht gesprungen wurde:
+        if (*txtpos == '\0') {                                                            // Wenn wir am Ende der Zeile stehen (\0)
+          if (tron_marker) cmd_tron(tron_delay, currentLineIndex);                        // TRON-Funktion nur im RUN-Modus
           currentLineIndex++;
           if (currentLineIndex < lineCount) {
             txtpos = program[currentLineIndex].text;
-            // Wichtig: Wir bleiben in der while(1), damit die neue Zeile
-            // sofort bearbeitet wird
             continue;
           } else {
             isRunning = false;
           }
         }
       }
-
-      /*{ //&& currentLineIndex == oldLine) {
-        currentLineIndex++;
-        break;
-        }*/
-
+      yield();
       break;
+
     }  //while(*txtpos != '\0')
 
+    yield();                                                                                 //Watchdog-erholung
   }// while(1)
 } //Basic-Interpreter
 
 
+//------------------------------------------------------------------- RTC-auslesen --------------------------------------------------------------------------------------------------------------------
+time_t getTeensy3Time() {
+  return Teensy3Clock.get();
+}
+
+
+bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
+  char c;
+  bool inEdit = true;
+
+  while (inEdit) {
+    c = inchar();
+
+    switch (c) {
+      case 13: // ENTER
+      case 10:
+        buffer[length] = '\0';
+        outchar(13);
+        return true;
+
+      case 27: // ESC
+        return false;
+
+      //case 203: // LINKS
+      case 216:
+        /*if (cursor > 0) {
+          cursor--;
+          print("\b");
+          }*/
+        if (cursor > 0) {
+          drawCursor(false);
+          cursor--;
+          // (x_pos/y_pos Logik wie bisher)
+          if (x_pos == 0) {
+            x_pos = MAX_C - 1;
+            y_pos--;
+          }
+          else {
+            x_pos--;
+          }
+          drawCursor(cursor_on_off);
+        }
+        break;
+
+      //case 204: // RECHTS
+      case 215:
+        if (cursor < length) {
+          outchar(buffer[cursor]);
+          cursor++;
+        }
+        break;
+
+      case 8: // BACKSPACE
+      case 127:
+        if (cursor > 0) {
+          drawCursor(false);
+          // 1. Puffer-Logik
+          for (int i = cursor - 1; i < length; i++) buffer[i] = buffer[i + 1];
+          length--;
+          cursor--;
+
+          // 2. Cursor zurücksetzen (Manuell wegen Zeilensprung-Gefahr)
+          if (x_pos == 0) {
+            x_pos = MAX_C - 1;
+            y_pos--;
+          } else {
+            x_pos--;
+          }
+
+          // 3. Den restlichen Text ab neuer Position komplett neu schreiben
+          int tempX = x_pos; // Position merken
+          int tempY = y_pos;
+
+          for (int i = cursor; i < length; i++) outchar(buffer[i]);
+
+          print(" "); // Das ehemals letzte Zeichen am Bildschirm löschen
+
+          // 4. Cursor wieder an die gemerkte Stelle setzen
+          x_pos = tempX;
+          y_pos = tempY;
+          drawCursor(cursor_on_off);
+        }
+        break;
+      /*
+        if (cursor > 0) {
+         for (int i = cursor - 1; i < length; i++) buffer[i] = buffer[i + 1];
+         length--;
+         cursor--;
+         print("\b");
+         for (int i = cursor; i < length; i++) outchar(buffer[i]);
+         print(" ");
+         for (int i = 0; i <= (length - cursor); i++) print("\b");
+        }
+        break;
+      */
+
+      //case 205: 
+      case 212: // ENTF / DELETE (Löscht das Zeichen RECHTS vom Cursor)
+        if (cursor < length) {
+          // 1. Puffer-Logik: Alles rechts vom Cursor eins nach links schieben
+          for (int i = cursor; i < length - 1; i++) {
+            buffer[i] = buffer[i + 1];
+          }
+          length--;
+          buffer[length] = '\0'; // String-Ende markieren
+
+          // 2. Aktuelle Position merken
+          int tempX = x_pos;
+          int tempY = y_pos;
+
+          // 3. Den restlichen Text ab der aktuellen Position neu schreiben
+          
+          for (int i = cursor; i < length; i++) {
+            outchar(buffer[i]);
+          }
+
+          // Das nun überflüssige Zeichen am Ende der Kette löschen
+          print(" ");
+
+          // 4. Cursor wieder exakt an die gemerkte Stelle zurücksetzen
+          x_pos = tempX;
+          y_pos = tempY;
+          drawCursor(cursor_on_off);
+        }
+        break;
+      default:
+
+        if (c >= 32 && length < bufferSize - 1) {
+          // 1. Platz im Puffer schaffen (Einfügemodus)
+          for (int i = length; i > cursor; i--) buffer[i] = buffer[i - 1];
+          buffer[cursor] = c;
+          length++;
+
+          // 2. Aktuelle Position merken, bevor wir den Rest neu schreiben
+          // (Wichtig, damit wir nach dem Zeilenumbruch-Drucken zurückfinden)
+          int startX = x_pos;
+          int startY = y_pos;
+
+          // 3. Das neue Zeichen und den gesamten Rest der Zeile drucken
+          // outchar() sorgt hier automatisch für den Zeilenumbruch nach unten
+          for (int i = cursor; i < length; i++) {
+            outchar(buffer[i]);
+          }
+
+          // 4. Den Cursor intern um eins erhöhen
+          cursor++;
+
+          // 5. Den Bildschirm-Cursor an die NEUE Position setzen
+          // Wir berechnen die neue Position ausgehend vom alten Startpunkt
+          startX++;
+          if (startX >= MAX_C) {
+            startX = 0;
+            startY++;
+          }
+
+          x_pos = startX;
+          y_pos = startY;
+          drawCursor(cursor_on_off);
+        }
+        break;
+        /*
+          if (c >= 32 && length < bufferSize - 1) {
+          // Einfügemodus
+          for (int i = length; i > cursor; i--) buffer[i] = buffer[i - 1];
+          buffer[cursor] = c;
+          length++;
+          for (int i = cursor; i < length; i++) outchar(buffer[i]);
+          cursor++;
+          for (int i = 0; i < (length - cursor); i++) print("\b");
+          }
+          break;
+        */
+    }
+  }
+  return false;
+}
+
+
+void cmd_edit() {
+
+
+  int targetLine = (int)expression(); // Zeilennummer einlesen
+  int foundIndex = -1;
+
+
+  // 1. Zeile im Speicher suchen
+  for (int i = 0; i < lineCount; i++) {
+    if (program[i].number == targetLine) {
+      foundIndex = i;
+      break;
+    }
+  }
+
+  if (foundIndex == -1) {
+    println("LINE NOT FOUND");
+    return;
+  }
+
+  // 2. Zeile in den inputBuffer laden
+  memset(inputBuffer, 0, BUF_SIZE);
+  strncpy(inputBuffer, program[foundIndex].text, BUF_SIZE - 1);
+
+  int length = strlen(inputBuffer);
+  int cursor = length; // Cursor ans Ende setzen
+
+  // 3. Editor auf dieser Zeile starten
+  // Wir geben die Zeilennummer aus, damit der User weiß, wo er ist
+  print(targetLine); print(" ");
+  print(inputBuffer);
+
+  // Jetzt den Line-Editor nutzen (editLine gibt true bei Enter zurück)
+  if (editLine(inputBuffer, BUF_SIZE, cursor, length)) {
+    // Die bearbeitete Zeile wieder speichern
+    storeLine(targetLine, inputBuffer);
+  } else {
+    println(" Aborted.");
+  }
+  *txtpos = '\0';
+}
+
+/*
+  void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
+  uint8_t mod = keyboard1.getModifiers();
+  bool shift = (mod & 0x02) || (mod & 0x20);
+  bool altGr = (mod & 0x40);
+  // 1. Hardware-Scancodes haben Vorrang
+  switch (keycode) {
+
+    case 41: // ESC (Standard USB Scancode)
+      lastUsbChar = 27;
+      break_marker = true;
+      return; // Funktion sofort beenden
+      case 80: lastUsbChar = 203; return; // LINKS
+      case 79: lastUsbChar = 204; return; // RECHTS
+  }
+
+  if (altGr) {
+    switch (keycode) {
+      case 36: lastUsbChar = 0x7B; return; // Taste 7 - {
+      case 37: lastUsbChar = 0x5B; return; // Taste 8 - [
+      case 38: lastUsbChar = 0x5D; return; // Taste 9 - ]
+      case 39: lastUsbChar = 0x7D; return; // Taste 0 - }
+      case 100: lastUsbChar = 0x7C; return; // Taste < - |
+    }
+  }
+  // 2. Logik für die < > Taste (ohne AltGr)
+  else if (keycode == 100) {
+    if (shift) lastUsbChar = 0x3C;//(">");
+    else lastUsbChar = 0x3E;//("<");
+  }
+  else {
+    if (keycode == 53) {
+      lastUsbChar = 0x5E;//("^");
+    }
+  }
+  // 2. Wenn kein Scancode-Treffer, dann normale Zeichen
+  if (unicode > 0) {
+    lastUsbChar = unicode;
+  }
+  }
+*/
+
+void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
+  // 1. ZUERST: Unicode prüfen.
+  // Wenn ein echtes Zeichen (wie 'M' = 77) kommt, hat das Vorrang!
+  if (unicode > 31) {
+    lastUsbChar = unicode;
+    return; // Funktion beenden, 'M' ist sicher gespeichert.
+  }
+
+  // 2. NUR WENN unicode 0 ist (Sondertasten), prüfen wir den Keycode
+  if (unicode == 0) {
+    switch (keycode) {
+      case 41: lastUsbChar = 27;  break_marker = true; return; // ESC
+    }
+  }
+
+  // 3. ENTER & BACKSPACE separat abfangen (da unicode hier oft 0, 10 oder 13 ist)
+  if (keycode == 40) {
+    lastUsbChar = 13;
+    return;
+  }
+  if (keycode == 42) {
+    lastUsbChar = 8;
+    return;
+  }
+  if (keycode == 41) {
+    lastUsbChar = 27;
+    break_marker = true;
+    return;
+  }
+}
 
 void setup() {
-  Serial.begin(115200);
-  while (!Serial);
-  Serial.println("**** TEENSY BASIC 1.0 ****");
+  /*
+    Serial.begin(9600);
+    delay(1000);
+    if (CrashReport) {
+    Serial.print(CrashReport); // Zeigt an, ob es ein Speicherfehler (MPU) oder ähnliches war
+    }
+  */
+  myusb.begin();
+  //keyboard1.forceBootProtocol();
+  keyboard1.attachPress(OnPress);
+  setSyncProvider(getTeensy3Time);
+
+  //Serial.begin(115200);
+  //while (!Serial);
+
+  vga_error_t err = vga.begin(VGA_MODE_320x240);//352x240);//352x240);
+  if (err != 0)
+  {
+    println("fatal error");
+    while (1);
+  }
+  // In der Initialisierung (z.B. bei vga.init)
+  for (int r = 0; r < MAX_R; r++) {
+    for (int c = 0; c < MAX_C; c++) {
+      screenBuffer[r][c] = ' ';
+      colorBuffer_F[r][c] = 0xFF; // Standard: Weiß
+      colorBuffer_H[r][c] = 0x00; // Standard: Schwarz
+    }
+  }
+  cmd_cls();
+  vga.get_frame_buffer_size(&fb_width, &fb_height);
+
+  printmsg("  *** TEENSY BASIC ", 0);
+  print(BasicVersion);
+  printmsg(" by Zille-Soft ***", 1);
+  printmsg("        **** Built ", 0);
+  print(BuiltTime);
+  printmsg(" ****", 1);
+  printmsg("     *** ", 0);
+  print((int)get_mem(5));
+  printmsg(" Basic Bytes free ***", 1);
+  println();
   if (!SD.begin(chipSelect)) {
-    Serial.println("SD Initialisierung fehlgeschlagen!");
+    syntaxerror(sderrormsg);
+  }
+  else println(mountmsg);
+  if (external_psram_size > 0) {
+    print("PSRAM gefunden:");
+    print(external_psram_size);
+    println("MB");
+  } else {
+    println("Kein PSRAM erkannt!");
   }
 }
 
