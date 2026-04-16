@@ -18,6 +18,7 @@
 //                                         -Befehl LINE eingebunden -> LINE x,y,xx,yy
 //                                         -Befehl CIRC eingebunden -> CIRC x,y,w,h,fill
 //                                         -die Grafikbefehle führen noch zu Abstürzen wenn bsp.weise eine neue Basic-datei geladen werden soll - Screenpuffer ?
+//                                         -DIR - Ausgabe etwas angepasst
 //                                         -203976 Zeilen/sek. (Fastest)
 //
 //Version 1.4 12.04.2026                   -USB-Tastatur eingebunden, die Texteingaben erfolgen ab sofort nicht mehr über seriell sondern Tastatur
@@ -2423,7 +2424,7 @@ void cmd_files() {
     if (filter == "" || fileNameUpper.indexOf(filter) != -1) {
       fileCount++;
       totalFilesSize += entry.size();
-
+      x_pos = 1;
       print(fileName);
       if (entry.isDirectory()) {
         print("/");
@@ -2442,7 +2443,7 @@ void cmd_files() {
       }
       // 2. Datum und Zeit am Ende der Zeile
 
-      x_pos = 30;
+      x_pos = 29;
       // 2. Datum und Zeit am Ende der Zeile
       DateTimeFields tm;
       if (entry.getModifyTime(tm)) { // Übergabe der Struktur statt Pointer
@@ -4032,7 +4033,7 @@ void setup() {
     }
   */
   myusb.begin();
-  //keyboard1.forceBootProtocol();
+  keyboard1.forceBootProtocol();
   keyboard1.attachPress(OnPress);
   setSyncProvider(getTeensy3Time);
 
