@@ -690,7 +690,7 @@ static void outchar(char c) {
     if (x_pos > 0) x_pos--;   // KEIN Leerzeichen schreiben!
     return;
   }
-  if (c == 8 || c == 127 ) {
+  if (c == 8 || c == 127) {
     if (x_pos > 0) {
       x_pos--;
       screenBuffer[y_pos][x_pos] = ' ';
@@ -698,6 +698,7 @@ static void outchar(char c) {
       colorBuffer_F[y_pos][x_pos] = getVGA(F_COL);
       colorBuffer_H[y_pos][x_pos] = getVGA(H_COL);
       vga.drawText(x_pos * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);
+      
     }
     return;
   }
@@ -1060,7 +1061,7 @@ int waitkey() {
       int c = lastUsbChar;
       lastUsbChar = -1;
       if (c == 27) return 1;
-      if (c == 32 || c == '\n') break;
+      if (c == 32 || c == 13) break;
     }
   }
   return 0;
@@ -3843,12 +3844,8 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
       case 27: // ESC
         return false;
 
-      //case 203: // LINKS
-      case 216:
-        /*if (cursor > 0) {
-          cursor--;
-          print("\b");
-          }*/
+     
+      case 216:  // LINKS
         if (cursor > 0) {
           drawCursor(false);
           cursor--;
@@ -3864,8 +3861,8 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
         }
         break;
 
-      //case 204: // RECHTS
-      case 215:
+      
+      case 215: // RECHTS
         if (cursor < length) {
           outchar(buffer[cursor]);
           cursor++;
@@ -3875,72 +3872,50 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
       case 8: // BACKSPACE
       case 127:
         if (cursor > 0) {
-          drawCursor(false);
-          // 1. Puffer-Logik
-          for (int i = cursor - 1; i < length; i++) buffer[i] = buffer[i + 1];
+          drawCursor(false);                                                                                //Cursor ausschalten
+          for (int i = cursor - 1; i < length; i++) buffer[i] = buffer[i + 1];                              // Puffer-Logik
           length--;
           cursor--;
 
-          // 2. Cursor zurücksetzen (Manuell wegen Zeilensprung-Gefahr)
-          if (x_pos == 0) {
+          if (x_pos == 0) {                                                                                 // Cursor zurücksetzen (Zeilensprung-Gefahr)
             x_pos = MAX_C - 1;
             y_pos--;
           } else {
             x_pos--;
           }
-
-          // 3. Den restlichen Text ab neuer Position komplett neu schreiben
-          int tempX = x_pos; // Position merken
+          
+          int tempX = x_pos;                                                                                // Position merken
           int tempY = y_pos;
-
           for (int i = cursor; i < length; i++) outchar(buffer[i]);
-
-          print(" "); // Das ehemals letzte Zeichen am Bildschirm löschen
-
-          // 4. Cursor wieder an die gemerkte Stelle setzen
-          x_pos = tempX;
+          vga.drawText(x_pos * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);                     // Das ehemals letzte Zeichen am Bildschirm löschen
+          vga.drawText((x_pos+1) * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);
+           
+          x_pos = tempX;                                                                                    // Cursor an die gemerkte Stelle setzen
           y_pos = tempY;
-          drawCursor(cursor_on_off);
+          drawCursor(cursor_on_off);                                                                        //Cursor wieder einschalten
         }
         break;
-      /*
-        if (cursor > 0) {
-         for (int i = cursor - 1; i < length; i++) buffer[i] = buffer[i + 1];
-         length--;
-         cursor--;
-         print("\b");
-         for (int i = cursor; i < length; i++) outchar(buffer[i]);
-         print(" ");
-         for (int i = 0; i <= (length - cursor); i++) print("\b");
-        }
-        break;
-      */
 
-      //case 205: 
-      case 212: // ENTF / DELETE (Löscht das Zeichen RECHTS vom Cursor)
+      
+      case 212:                                                                                             // ENTF / DELETE (Löscht das Zeichen RECHTS vom Cursor)
         if (cursor < length) {
-          // 1. Puffer-Logik: Alles rechts vom Cursor eins nach links schieben
-          for (int i = cursor; i < length - 1; i++) {
+         
+          for (int i = cursor; i < length - 1; i++) {                                                      // 1. Puffer-Logik: Alles rechts vom Cursor eins nach links schieben
             buffer[i] = buffer[i + 1];
           }
           length--;
-          buffer[length] = '\0'; // String-Ende markieren
+          buffer[length] = '\0'; 
 
-          // 2. Aktuelle Position merken
           int tempX = x_pos;
           int tempY = y_pos;
-
-          // 3. Den restlichen Text ab der aktuellen Position neu schreiben
           
-          for (int i = cursor; i < length; i++) {
+          for (int i = cursor; i < length; i++) {                                                           // 3. Den restlichen Text ab der aktuellen Position neu schreiben
             outchar(buffer[i]);
           }
 
-          // Das nun überflüssige Zeichen am Ende der Kette löschen
-          print(" ");
-
-          // 4. Cursor wieder exakt an die gemerkte Stelle zurücksetzen
-          x_pos = tempX;
+          vga.drawText(x_pos * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);                     // Das überflüssige Zeichen am Ende der Kette löschen
+          
+          x_pos = tempX;                                                                                    // Cursor wieder an die gemerkte Stelle zurücksetzen
           y_pos = tempY;
           drawCursor(cursor_on_off);
         }
@@ -3948,28 +3923,17 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
       default:
 
         if (c >= 32 && length < bufferSize - 1) {
-          // 1. Platz im Puffer schaffen (Einfügemodus)
-          for (int i = length; i > cursor; i--) buffer[i] = buffer[i - 1];
+          
+          for (int i = length; i > cursor; i--) buffer[i] = buffer[i - 1];                                  // Platz im Puffer schaffen (Einfügemodus)
           buffer[cursor] = c;
           length++;
-
-          // 2. Aktuelle Position merken, bevor wir den Rest neu schreiben
-          // (Wichtig, damit wir nach dem Zeilenumbruch-Drucken zurückfinden)
-          int startX = x_pos;
-          int startY = y_pos;
-
-          // 3. Das neue Zeichen und den gesamten Rest der Zeile drucken
-          // outchar() sorgt hier automatisch für den Zeilenumbruch nach unten
-          for (int i = cursor; i < length; i++) {
-            outchar(buffer[i]);
+          int startX = x_pos;                                                                               // Aktuelle Position merken
+          int startY = y_pos;                                                                               // (Wichtig, damit wir nach dem Zeilenumbruch-Drucken zurückfinden)
+          for (int i = cursor; i < length; i++) {                                                           // Das neue Zeichen und den gesamten Rest der Zeile drucken
+            outchar(buffer[i]);                                                                             // outchar() sorgt hier automatisch für den Zeilenumbruch nach unten
           }
-
-          // 4. Den Cursor intern um eins erhöhen
-          cursor++;
-
-          // 5. Den Bildschirm-Cursor an die NEUE Position setzen
-          // Wir berechnen die neue Position ausgehend vom alten Startpunkt
-          startX++;
+          cursor++;                                                                                         // Den Cursor intern um eins erhöhen
+          startX++;                                                                                         // Den Cursor an die NEUE Position setzen
           if (startX >= MAX_C) {
             startX = 0;
             startY++;
@@ -3980,18 +3944,6 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
           drawCursor(cursor_on_off);
         }
         break;
-        /*
-          if (c >= 32 && length < bufferSize - 1) {
-          // Einfügemodus
-          for (int i = length; i > cursor; i--) buffer[i] = buffer[i - 1];
-          buffer[cursor] = c;
-          length++;
-          for (int i = cursor; i < length; i++) outchar(buffer[i]);
-          cursor++;
-          for (int i = 0; i < (length - cursor); i++) print("\b");
-          }
-          break;
-        */
     }
   }
   return false;
@@ -4040,64 +3992,22 @@ void cmd_edit() {
   *txtpos = '\0';
 }
 
-/*
-  void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
-  uint8_t mod = keyboard1.getModifiers();
-  bool shift = (mod & 0x02) || (mod & 0x20);
-  bool altGr = (mod & 0x40);
-  // 1. Hardware-Scancodes haben Vorrang
-  switch (keycode) {
-
-    case 41: // ESC (Standard USB Scancode)
-      lastUsbChar = 27;
-      break_marker = true;
-      return; // Funktion sofort beenden
-      case 80: lastUsbChar = 203; return; // LINKS
-      case 79: lastUsbChar = 204; return; // RECHTS
-  }
-
-  if (altGr) {
-    switch (keycode) {
-      case 36: lastUsbChar = 0x7B; return; // Taste 7 - {
-      case 37: lastUsbChar = 0x5B; return; // Taste 8 - [
-      case 38: lastUsbChar = 0x5D; return; // Taste 9 - ]
-      case 39: lastUsbChar = 0x7D; return; // Taste 0 - }
-      case 100: lastUsbChar = 0x7C; return; // Taste < - |
-    }
-  }
-  // 2. Logik für die < > Taste (ohne AltGr)
-  else if (keycode == 100) {
-    if (shift) lastUsbChar = 0x3C;//(">");
-    else lastUsbChar = 0x3E;//("<");
-  }
-  else {
-    if (keycode == 53) {
-      lastUsbChar = 0x5E;//("^");
-    }
-  }
-  // 2. Wenn kein Scancode-Treffer, dann normale Zeichen
-  if (unicode > 0) {
-    lastUsbChar = unicode;
-  }
-  }
-*/
 
 void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
-  // 1. ZUERST: Unicode prüfen.
-  // Wenn ein echtes Zeichen (wie 'M' = 77) kommt, hat das Vorrang!
+  // ZUERST: Unicode prüfen.
   if (unicode > 31) {
     lastUsbChar = unicode;
     return; // Funktion beenden, 'M' ist sicher gespeichert.
   }
 
-  // 2. NUR WENN unicode 0 ist (Sondertasten), prüfen wir den Keycode
+  // NUR WENN unicode 0 ist (Sondertasten), prüfen wir den Keycode
   if (unicode == 0) {
     switch (keycode) {
       case 41: lastUsbChar = 27;  break_marker = true; return; // ESC
     }
   }
 
-  // 3. ENTER & BACKSPACE separat abfangen (da unicode hier oft 0, 10 oder 13 ist)
+  // ENTER & BACKSPACE separat abfangen (da unicode hier oft 0, 10 oder 13 ist)
   if (keycode == 40) {
     lastUsbChar = 13;
     return;
