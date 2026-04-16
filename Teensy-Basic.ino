@@ -18,7 +18,6 @@
 //                                         -Befehl LINE eingebunden -> LINE x,y,xx,yy
 //                                         -Befehl CIRC eingebunden -> CIRC x,y,w,h,fill
 //                                         -die Grafikbefehle führen noch zu Abstürzen wenn bsp.weise eine neue Basic-datei geladen werden soll - Screenpuffer ?
-//                                         -VGA-Funktionalität eingebunden, jetzt kanns richtig losgehen - kleiner Fehler in der Pinbeschaltung für VGA behoben
 //                                         -203976 Zeilen/sek. (Fastest)
 //
 //Version 1.4 12.04.2026                   -USB-Tastatur eingebunden, die Texteingaben erfolgen ab sofort nicht mehr über seriell sondern Tastatur
@@ -32,6 +31,7 @@
 //Version 1.3 10.04.2026                   -ENDIF als TOKEN und in der IF-THEN-ELSE Ausführung entfernt, das hat den Basic-Interpreter extrem ausgebremst
 //                                         -durch die Rückkehr zum normalen IF-THEN-ELSE ist die Geschwindigkeit mehr als doppelt so hoch
 //                                         -DEFN und FN mit bis zu 4 Parametern eingebaut als Variablen sind aber nur einbuchstabige Variablen erlaubt!
+//                                         -VGA-Funktionalität eingebunden, jetzt kanns richtig losgehen - kleiner Fehler in der Pinbeschaltung für VGA behoben
 //                                         -242274 Zeilen/sek. (Optimize: Fastest)
 //
 //Version 1.2 08.04.2026                   -USB-Keyboard-Treiber eingebaut, muss aber noch am Teensy angesteckt werden (fehlendes Kabel)
@@ -73,11 +73,11 @@ vga_pixel vga_fg = VGA_RGB(255, 255, 255); // Weiß
 vga_pixel vga_bg = VGA_RGB(0, 0, 170);     // C64-Blau
 static int fb_width, fb_height;
 int currentIndent = 0;
-// Konfiguration passend zu deinem C64-Beispiel
+
 const int fontH = 8;
-const int MAX_C = 40;       //Anzahl Textspalten
-const int MAX_R = 30;       //Anzahl Textzeilen
-char screenBuffer[MAX_R][MAX_C]; // Neuer Buffer: 30 Zeilen à 40 Zeichen
+const int MAX_C = 40;                 //Anzahl Textspalten
+const int MAX_R = 30;                 //Anzahl Textzeilen
+char screenBuffer[MAX_R][MAX_C];      // Bildschirm-Buffer: 30 Zeilen à 40 Zeichen
 uint8_t colorBuffer_F[MAX_R][MAX_C];  // Speichert die Vordergrundfarbe (8-Bit VGA)
 uint8_t colorBuffer_H[MAX_R][MAX_C];  // Speichert die Hintergrundfarbe (8-Bit VGA)
 bool cursor_on_off = true;
@@ -94,36 +94,33 @@ bool cursor_on_off = true;
 uint8_t F_COL[] {0, 136, 255};
 uint8_t H_COL[] {0, 0, 255};
 
-// Aktuelle Position (global)
-int x_pos = 0;
+
+int x_pos = 0;                              // Aktuelle Position (global)
 int y_pos = 0;
 
-struct Params {
+struct Params {                             //struct für wiederkehrende Parametereingaben
   int val[10];
 };
 
-// TRON/TROFF - Marker
-bool tron_marker = false;
 
-#include <stdarg.h>   //für printf
-#include <TimeLib.h>
+bool tron_marker = false;                   // TRON/TROFF - Marker
+
+#include <stdarg.h>                         //für printf
+#include <TimeLib.h>                        //RTC-Funktionen
 
 #include <SPI.h>
 #include <SD.h>
 
-// Für Teensy 4.1/4.0/3.6 Onboard-SD-Slot:
-const int chipSelect = BUILTIN_SDCARD;
+
+const int chipSelect = BUILTIN_SDCARD;      // Für Teensy 4.1/4.0/3.6 Onboard-SD-Slot:
 
 #include "USBHost_t36.h"                    //USB-Keyboard-treiber
 USBHost myusb;
-USBHub hub1(myusb); // Optional, falls ein Hub verwendet wird
-USBHIDParser hid1(myusb); // Der "Dolmetscher" für moderne Tastaturen
+USBHub hub1(myusb);                         // Optional, falls ein Hub verwendet wird
+USBHIDParser hid1(myusb);                   // Der "Dolmetscher" für moderne Tastaturen
 KeyboardController keyboard1(myusb);
-// Oben im Sketch bei den globalen Variablen:
-volatile int lastUsbChar = -1;
 
-uint8_t keyboard_modifiers = 0;  // try to keep a reasonable value
-uint8_t keyboard_last_leds = 0;
+volatile int lastUsbChar = -1;              //Merker für die letzte gedrückte Taste
 
 // ASCII Characters
 #define CR  '\r'
@@ -153,10 +150,8 @@ int gosubStackPtr = 0;
 
 bool break_marker = false;
 bool jumped = false;
-// Global definieren, damit GOTO und andere darauf zugreifen können
 double lastNumberValue = 0;
-
-int precisionValue = 6; // Standardmäßig 2 Stellen
+int precisionValue = 6; // Standardmäßig 6 Stellen
 
 
 // Index 0: Kein zweites Zeichen (nur "A")
