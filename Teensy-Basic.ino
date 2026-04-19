@@ -63,7 +63,6 @@
 char inputBuffer[BUF_SIZE];
 static char *txtpos, *list_line;//, *tmptxtpos, *dataline;
 bool inQuotes = false;
-
 extern "C" uint8_t external_psram_size;
 
 #include <VGA_t4.h>
@@ -76,8 +75,8 @@ static int fb_width, fb_height;
 int currentIndent = 0;
 
 const int fontH = 8;
-const int MAX_C = 40;                 //Anzahl Textspalten
-const int MAX_R = 30;                 //Anzahl Textzeilen
+const int MAX_C = 640 / 8;                 //Anzahl Textspalten
+const int MAX_R = 240 / 8;                 //Anzahl Textzeilen
 char screenBuffer[MAX_R][MAX_C];      // Bildschirm-Buffer: 30 Zeilen à 40 Zeichen
 uint8_t colorBuffer_F[MAX_R][MAX_C];  // Speichert die Vordergrundfarbe (8-Bit VGA)
 uint8_t colorBuffer_H[MAX_R][MAX_C];  // Speichert die Hintergrundfarbe (8-Bit VGA)
@@ -143,7 +142,7 @@ typedef short unsigned LINENUM;
 #define MAX_GOSUB_STACK 25
 struct GosubStack {
   int lineIndex;
-  const char* textPos;
+  const char* txtPos;
 };
 
 GosubStack gosubStack[MAX_GOSUB_STACK];
@@ -189,7 +188,7 @@ int arrayCount = 0;
 
 struct WhileStack {
   int lineIndex;
-  const char* textPos;
+  const char* txtPos;
 };
 
 WhileStack whileStack[MAX_WHILE_STACK];
@@ -202,7 +201,7 @@ struct ForLoop {
   double targetValue;
   double stepValue;
   int lineIndex;
-  const char* textPos;
+  const char* txtPos;
 };
 
 #define MAX_FOR_STACK 26
@@ -327,6 +326,9 @@ enum {
   TOKEN_PEN,
   TOKEN_CUR,
   TOKEN_EDIT,      //letzter Basic-Befehl
+  TOKEN_AND,
+  TOKEN_OR,
+  TOKEN_STYLE,
   TOKEN_RND,       //erster Funktions-Befehl
   TOKEN_SQR,
   TOKEN_SIN,
@@ -358,6 +360,7 @@ enum {
   TOKEN_FN,
   TOKEN_INKEY,
   TOKEN_STRING,      //letzter Funktions-Befehl
+  TOKEN_EXP,
   TOKEN_END
 };
 
@@ -420,6 +423,9 @@ Keyword commands[] = {
   {"PEN", TOKEN_PEN},
   {"CUR", TOKEN_CUR},
   {"EDIT", TOKEN_EDIT},
+  {"AND", TOKEN_AND},
+  {"OR", TOKEN_OR},
+  {"STYLE", TOKEN_STYLE},
   {NULL, 0}
 };
 
@@ -455,6 +461,7 @@ Keyword functions[] = {
   {"FN", TOKEN_FN},
   {"INKEY", TOKEN_INKEY},
   {"STRING$", TOKEN_STRING},
+  {"EXP", TOKEN_EXP},
   {NULL, 0}
 };
 
@@ -478,9 +485,9 @@ int lineCount = 0;                                                              
 // vga8ToRGB(meinVgaWert, r, g, b);
 void fbcolor(uint8_t vgaVal, bool vh) {
   // Rot: Die obersten 3 Bits isolieren
-  uint8_t  r = (vgaVal & 0xE0) | ((vgaVal & 0xE0) >> 3) | ((vgaVal & 0xE0) >> 6);
-  uint8_t  g = ((vgaVal & 0x1C) << 3) | (vgaVal & 0x1C) | ((vgaVal & 0x1C) >> 3);
-  uint8_t  b = ((vgaVal & 0x03) << 6) | ((vgaVal & 0x03) << 4) | ((vgaVal & 0x03) << 2) | (vgaVal & 0x03);
+  uint8_t  r = (vgaVal & 0xE0); //| ((vgaVal & 0xE0) >> 3) | ((vgaVal & 0xE0) >> 6);
+  uint8_t  g = ((vgaVal & 0x1C) << 3) ;//| (vgaVal & 0x1C) | ((vgaVal & 0x1C) >> 3);
+  uint8_t  b = ((vgaVal & 0x03) << 6) ;//| ((vgaVal & 0x03) << 4) | ((vgaVal & 0x03) << 2) | (vgaVal & 0x03);
   if (vh) {
     H_COL[0] = r;
     H_COL[1] = g;
@@ -699,7 +706,7 @@ static void outchar(char c) {
       colorBuffer_F[y_pos][x_pos] = getVGA(F_COL);
       colorBuffer_H[y_pos][x_pos] = getVGA(H_COL);
       vga.drawText(x_pos * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);
-      
+
     }
     return;
   }
@@ -1145,7 +1152,7 @@ void printColoredLine(char* lineText) {
 
 void cmd_list() {
 
-  int currentIndent = 0;
+  currentIndent = 0;
   int tmp_color = rgbToVGA(H_COL[0], H_COL[1], H_COL[2]); //aktuelle Hintergrundfarbe sichern
   fbcolor(0, 1);                                          //Hintergrund für die Listausgabe in Schwarz
   //cmd_cls();                                            //vorher Bildschirm löschen ?, reine Geschmackssache
@@ -1456,7 +1463,7 @@ double factor() {
       case TOKEN_RND: case TOKEN_SQR: case TOKEN_SIN: case TOKEN_COS:
       case TOKEN_ABS: case TOKEN_INT: case TOKEN_DEG: case TOKEN_RAD:
       case TOKEN_SGN: case TOKEN_BIN : case TOKEN_HEX : case TOKEN_OCT :
-      case TOKEN_GTIME :
+      case TOKEN_GTIME : case TOKEN_EXP:
         // Gemeinsame Logik für die Klammern der Funktionen
         spaces();
         if (*txtpos == '(') txtpos++;
@@ -1479,6 +1486,7 @@ double factor() {
           case TOKEN_BIN: printMode = 2;  return arg;
           case TOKEN_OCT: printMode = 8;  return arg;
           case TOKEN_GTIME: return func_gtime(arg);
+          case TOKEN_EXP: return exp(arg);
 
         }
         break;
@@ -1606,6 +1614,39 @@ bool relation() {
   return false;
 }
 
+void ungetToken(int token) {
+
+  if (token == TOKEN_THEN) txtpos -= 4;
+  // Eleganter: Du speicherst dir in getCommandToken immer die "last_txtpos"
+}
+
+
+bool logical_expression() {
+  char *tmp;
+  bool result = relation(); // Ersten Vergleich auswerten (z.B. A < B)
+
+  tmp = txtpos;
+
+  while (true) {
+    tmp = txtpos;
+    int token = getCommandToken();
+
+    if (token == TOKEN_AND) {
+      // AND-Verknüpfung: Das nächste Ergebnis muss auch wahr sein
+      result = result && relation();
+    }
+    else if (token == TOKEN_OR) {
+      // OR-Verknüpfung: Eines von beiden muss wahr sein
+      result = result || relation();
+    }
+    else {
+      // Wenn es kein AND/OR ist, gehört das Token zum nächsten Befehl (z.B. THEN)
+      // Wir müssen den txtpos zurücksetzen, damit IF das THEN findet.
+      if (token == TOKEN_THEN) txtpos = tmp; //ungetToken(token);
+      return result;
+    }
+  }
+}
 
 String getVarName(int i, int j) {
   String name = "";
@@ -2295,7 +2336,7 @@ void cmd_on() {
           while (*p != '\0' && *p != ':' && *p != '\r' && *p != '\n') p++;
 
           gosubStack[gosubStackPtr].lineIndex = currentLineIndex;
-          gosubStack[gosubStackPtr].textPos = p;
+          gosubStack[gosubStackPtr].txtPos = p;
           gosubStackPtr++;
         } else {
           println("GOSUB STACK OVERFLOW");
@@ -2340,7 +2381,7 @@ void cmd_gosub() {
       // Rücksprungpunkt speichern:
       // Wir speichern die aktuelle Zeile und die Position NACH der GOTO-Nummer
       gosubStack[gosubStackPtr].lineIndex = currentLineIndex;
-      gosubStack[gosubStackPtr].textPos = txtpos;
+      gosubStack[gosubStackPtr].txtPos = txtpos;
       gosubStackPtr++;
 
       // Den Sprung ausführen (nutzt deine existierende jumpTo Logik)
@@ -2364,7 +2405,7 @@ void cmd_return() {
 
     // 1. Position vom Stack holen
     currentLineIndex = gosubStack[gosubStackPtr].lineIndex;
-    txtpos = gosubStack[gosubStackPtr].textPos;
+    txtpos = gosubStack[gosubStackPtr].txtPos;
 
     // 2. WICHTIG: Prüfen, was an der Rücksprungstelle steht
     spaces();
@@ -2386,10 +2427,12 @@ void cmd_return() {
   }
 }
 
+
 //************************************************************ SD-Card-Funktionen **********************************************************
 void cmd_files() {
   int zeilen = 0;
   spaces();
+  drawCursor(false);
 
   String filter = "";
   if (*txtpos == '"' || isalpha(*txtpos)) {
@@ -2420,13 +2463,19 @@ void cmd_files() {
     String fileName = String(entry.name());
     String fileNameUpper = fileName;
     fileNameUpper.toUpperCase();
-
+    // int f = check_extension(fileNameUpper);
     if (filter == "" || fileNameUpper.indexOf(filter) != -1) {
       fileCount++;
       totalFilesSize += entry.size();
       x_pos = 1;
+      fbcolor(YELLOW, 0);
+      if (fileNameUpper.indexOf(".BAS") != -1) fbcolor(CYAN, 0);
+      else if (fileNameUpper.indexOf(".BIN") != -1) fbcolor(GREEN, 0);
+      else if (fileNameUpper.indexOf(".BMP") != -1) fbcolor(RED, 0);
       print(fileName);
+      fbcolor(WHITE, 0);
       if (entry.isDirectory()) {
+        fbcolor(YELLOW, 0);
         print("/");
         x_pos = 21;
         println("< dir >");
@@ -2477,7 +2526,7 @@ void cmd_files() {
   uint64_t usedCardBytes = SD.usedSize();
   uint64_t freeCardBytes = totalCardBytes - usedCardBytes;
 
-  println("-----------------------------------");
+  println("----------------------------------------");
   print(fileCount); println(" Files found.");
 
   print("Used memory:   ");
@@ -2488,6 +2537,8 @@ void cmd_files() {
 
   print("Total capacity: ");
   printSmartSize(totalCardBytes);
+
+  drawCursor(cursor_on_off);
 }
 
 // Hilfsfunktion zur schöneren Größenanzeige (B, KB, MB, GB)
@@ -3100,14 +3151,14 @@ void cmd_while() {
 
   if (condition) {
     bool alreadyOnStack = false;                                                                // Prüfung bereits in dieser Schleife (Rücksprung von WEND)?
-    if (whileStackPtr > 0 && whileStack[whileStackPtr - 1].textPos == conditionStart) {
+    if (whileStackPtr > 0 && whileStack[whileStackPtr - 1].txtPos == conditionStart) {
       alreadyOnStack = true;
     }
 
     if (!alreadyOnStack) {
       if (whileStackPtr < MAX_WHILE_STACK) {
         whileStack[whileStackPtr].lineIndex = currentLineIndex;
-        whileStack[whileStackPtr].textPos = conditionStart;
+        whileStack[whileStackPtr].txtPos = conditionStart;
         whileStackPtr++;
       } else {
         isRunning = false;
@@ -3133,7 +3184,7 @@ void cmd_while() {
       txtpos++;
     }
 
-    if (whileStackPtr > 0 && whileStack[whileStackPtr - 1].textPos == conditionStart) {         // Schleife auf dem Stack  entfernen
+    if (whileStackPtr > 0 && whileStack[whileStackPtr - 1].txtPos == conditionStart) {         // Schleife auf dem Stack  entfernen
       whileStackPtr--;
     }
     jumped = true;                                                                              // Dem Haupt-Loop signalisieren: Zeiger ist gesetzt
@@ -3207,8 +3258,9 @@ double get_mem(int m) {
     case 5: return freeBytes;
     default:
       break;
-      return 0;
+      
   }
+  return 0;
 }
 
 void cmd_mem() {
@@ -3560,8 +3612,17 @@ void Basic_interpreter() {
         case TOKEN_PEN: {
             int c = (int)expression();
             fbcolor(c, 0);
+            break;
           }
+        
+        case TOKEN_AND:                                        //Logisch UND
+
           break;
+
+        case TOKEN_OR:                                         //Logisch OR
+
+          break;
+
         case TOKEN_TRON: {
             if (*txtpos == '\0') tron_delay = 0;
             else tron_delay = (unsigned long)expression();
@@ -3610,7 +3671,7 @@ void Basic_interpreter() {
         case TOKEN_VARIABLE: cmd_assignment(); break;
 
         case TOKEN_IF: {
-            last_if_result = relation(); // Ergebnis für das ELSE speichern
+            last_if_result = logical_expression(); //relation(); // Ergebnis für das ELSE speichern
             if (getCommandToken() != TOKEN_THEN) {
               isRunning = false;
               break;
@@ -3676,7 +3737,7 @@ void Basic_interpreter() {
               forStack[forStackPtr].targetValue = target;
               forStack[forStackPtr].stepValue = step;
               forStack[forStackPtr].lineIndex = currentLineIndex;                       // Zeile UND die Position NACH dem FOR-Befehl merken
-              forStack[forStackPtr].textPos = txtpos;
+              forStack[forStackPtr].txtPos = txtpos;
 
               forStackPtr++;
 
@@ -3698,7 +3759,7 @@ void Basic_interpreter() {
                                  (variables[v1][v2] >= forStack[sIdx].targetValue);
 
               if (keepRunning) {
-                txtpos = forStack[sIdx].textPos;                                        // ZURÜCKSPRINGEN:
+                txtpos = forStack[sIdx].txtPos;                                        // ZURÜCKSPRINGEN:
                 currentLineIndex = forStack[sIdx].lineIndex;
                 if (*txtpos == '\0') {
                   jumped = false;
@@ -3845,7 +3906,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
       case 27: // ESC
         return false;
 
-     
+
       case 216:  // LINKS
         if (cursor > 0) {
           drawCursor(false);
@@ -3862,7 +3923,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
         }
         break;
 
-      
+
       case 215: // RECHTS
         if (cursor < length) {
           outchar(buffer[cursor]);
@@ -3884,38 +3945,38 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
           } else {
             x_pos--;
           }
-          
+
           int tempX = x_pos;                                                                                // Position merken
           int tempY = y_pos;
           for (int i = cursor; i < length; i++) outchar(buffer[i]);
           vga.drawText(x_pos * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);                     // Das ehemals letzte Zeichen am Bildschirm löschen
-          vga.drawText((x_pos+1) * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);
-           
+          vga.drawText((x_pos + 1) * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);
+
           x_pos = tempX;                                                                                    // Cursor an die gemerkte Stelle setzen
           y_pos = tempY;
           drawCursor(cursor_on_off);                                                                        //Cursor wieder einschalten
         }
         break;
 
-      
+
       case 212:                                                                                             // ENTF / DELETE (Löscht das Zeichen RECHTS vom Cursor)
         if (cursor < length) {
-         
+
           for (int i = cursor; i < length - 1; i++) {                                                      // 1. Puffer-Logik: Alles rechts vom Cursor eins nach links schieben
             buffer[i] = buffer[i + 1];
           }
           length--;
-          buffer[length] = '\0'; 
+          buffer[length] = '\0';
 
           int tempX = x_pos;
           int tempY = y_pos;
-          
+
           for (int i = cursor; i < length; i++) {                                                           // 3. Den restlichen Text ab der aktuellen Position neu schreiben
             outchar(buffer[i]);
           }
 
           vga.drawText(x_pos * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);                     // Das überflüssige Zeichen am Ende der Kette löschen
-          
+
           x_pos = tempX;                                                                                    // Cursor wieder an die gemerkte Stelle zurücksetzen
           y_pos = tempY;
           drawCursor(cursor_on_off);
@@ -3924,7 +3985,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
       default:
 
         if (c >= 32 && length < bufferSize - 1) {
-          
+
           for (int i = length; i > cursor; i--) buffer[i] = buffer[i - 1];                                  // Platz im Puffer schaffen (Einfügemodus)
           buffer[cursor] = c;
           length++;
@@ -4040,12 +4101,13 @@ void setup() {
   //Serial.begin(115200);
   //while (!Serial);
 
-  vga_error_t err = vga.begin(VGA_MODE_320x240);//352x240);//352x240);
+  vga_error_t err = vga.begin(VGA_MODE_640x240);//320x240);//352x240);//352x240);
   if (err != 0)
   {
     println("fatal error");
     while (1);
   }
+  vga.get_frame_buffer_size(&fb_width, &fb_height);
   // In der Initialisierung (z.B. bei vga.init)
   for (int r = 0; r < MAX_R; r++) {
     for (int c = 0; c < MAX_C; c++) {
@@ -4055,15 +4117,15 @@ void setup() {
     }
   }
   cmd_cls();
-  vga.get_frame_buffer_size(&fb_width, &fb_height);
 
-  printmsg("  *** TEENSY BASIC ", 0);
+
+  printmsg(" *** TEENSY BASIC ", 0);
   print(BasicVersion);
   printmsg(" by Zille-Soft ***", 1);
-  printmsg("        **** Built ", 0);
+  printmsg("       **** Built ", 0);
   print(BuiltTime);
   printmsg(" ****", 1);
-  printmsg("     *** ", 0);
+  printmsg("    *** ", 0);
   print((int)get_mem(5));
   printmsg(" Basic Bytes free ***", 1);
   println();
@@ -4072,11 +4134,11 @@ void setup() {
   }
   else println(mountmsg);
   if (external_psram_size > 0) {
-    print("PSRAM gefunden:");
+    print("PSRAM found:");
     print(external_psram_size);
     println("MB");
   } else {
-    println("Kein PSRAM erkannt!");
+    println("no PSRAM found!");
   }
 }
 
