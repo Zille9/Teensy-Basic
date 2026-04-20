@@ -18,7 +18,9 @@
 //                                         -Befehl LINE eingebunden -> LINE x,y,xx,yy
 //                                         -Befehl CIRC eingebunden -> CIRC x,y,w,h,fill
 //                                         -die Grafikbefehle führen noch zu Abstürzen wenn bsp.weise eine neue Basic-datei geladen werden soll - Screenpuffer ?
-//                                         -DIR - Ausgabe etwas angepasst
+//                                         -DIR - Ausgabe etwas farblich angepasst
+//                                         -Fehler in den print-Funktionen behoben, die Anzeige in cmd_files für die Ausgabe der noch freien und gesamten Bytes auf der SD-Karte war falsch
+//                                         -alle Print-Funktionen nach Function_print.ino ausgelagert
 //                                         -203976 Zeilen/sek. (Fastest)
 //
 //Version 1.4 12.04.2026                   -USB-Tastatur eingebunden, die Texteingaben erfolgen ab sofort nicht mehr über seriell sondern Tastatur
@@ -59,7 +61,7 @@
 #include <Arduino.h>
 #include <ctype.h>
 #include <string.h>
-#define BUF_SIZE 256
+#define BUF_SIZE 80
 char inputBuffer[BUF_SIZE];
 static char *txtpos, *list_line;//, *tmptxtpos, *dataline;
 bool inQuotes = false;
@@ -76,10 +78,10 @@ int currentIndent = 0;
 
 const int fontH = 8;
 const int MAX_C = 640 / 8;                 //Anzahl Textspalten
-const int MAX_R = 240 / 8;                 //Anzahl Textzeilen
-char screenBuffer[MAX_R][MAX_C];      // Bildschirm-Buffer: 30 Zeilen à 40 Zeichen
-uint8_t colorBuffer_F[MAX_R][MAX_C];  // Speichert die Vordergrundfarbe (8-Bit VGA)
-uint8_t colorBuffer_H[MAX_R][MAX_C];  // Speichert die Hintergrundfarbe (8-Bit VGA)
+const int MAX_R = 480 / 8;                 //Anzahl Textzeilen
+EXTMEM char screenBuffer[MAX_R][MAX_C];      // Bildschirm-Buffer: 30 Zeilen à 40 Zeichen
+EXTMEM uint8_t colorBuffer_F[MAX_R][MAX_C];  // Speichert die Vordergrundfarbe (8-Bit VGA)
+EXTMEM uint8_t colorBuffer_H[MAX_R][MAX_C];  // Speichert die Hintergrundfarbe (8-Bit VGA)
 bool cursor_on_off = true;
 #define BLUE       11
 #define LIGHT_BLUE 83
@@ -91,8 +93,8 @@ bool cursor_on_off = true;
 #define RED        196
 #define GRAY       114
 
-uint8_t F_COL[] {0, 136, 255};
-uint8_t H_COL[] {0, 0, 255};
+uint8_t F_COL[] {255, 255, 255};
+uint8_t H_COL[] {0, 50, 255};
 
 
 int x_pos = 0;                              // Aktuelle Position (global)
@@ -474,7 +476,7 @@ struct BasicLine {
   char text[LINE_LEN];                                                                  // Der eigentliche Befehlstext
 };
 
-BasicLine program[MAX_LINES];
+EXTMEM BasicLine program[MAX_LINES];
 int lineCount = 0;                                                                      // Wie viele Zeilen aktuell im Speicher sind
 
 #define BIN 2
@@ -539,105 +541,6 @@ void setpos(int x, int y)
 }
 
 
-// Für Texte (Strings)
-void print(const char *str) {
-  while (*str) outchar(*str++);
-}
-
-// Für einzelne Zeichen
-void print(char c) {
-  outchar(c);
-}
-
-// Für ganze Zahlen (int)
-void print(int n) {
-  char buf[12];
-  itoa(n, buf, 10);
-  print(buf);
-}
-
-// Für Fließkommazahlen (float/double) - wichtig für BASIC
-void print(double n) {
-  char buf[20];
-  // n, Vorkommastellen, Nachkommastellen, Puffer
-  dtostrf(n, 4, 2, buf);
-  print(buf);
-}
-void print(long n) {
-  print(n, 10);
-}
-void println(long n) {
-  print(n, 10);
-  outchar(13);
-}
-void println(const char *str) {
-  print(str);
-  outchar(13);
-}
-void println(int n)          {
-  print(n);
-  outchar(13);
-}
-void println(double n)       {
-  print(n);
-  outchar(13);
-}
-void println()               {
-  outchar(13);
-}
-void print(String s)         {
-  print(s.c_str());
-}
-void println(String s)       {
-  println(s.c_str());
-}
-
-void print(long n, int base) {
-  char buf[33]; // Genug Platz für 32 Bits (BIN) + Null-Terminator
-  ltoa(n, buf, base);
-
-  // Bei Hexadezimal sieht es in Großbuchstaben (C64-Style) besser aus
-  if (base == 16) {
-    for (int i = 0; buf[i]; i++) buf[i] = toupper(buf[i]);
-  }
-
-  print(buf); // Ruft deine print(const char*) auf
-}
-
-// Und die passende println-Version
-void println(long n, int base) {
-  print(n, base);
-  outchar(13);
-}
-
-void print(uint64_t n) {
-  char buf[21]; // Genug Platz für die größte 64-Bit Zahl (20 Stellen + \0)
-
-  // Da der Teensy ltoa/ultoa oft nur bis 32 Bit unterstützt,
-  // nutzen wir sprintf für echte 64-Bit Unterstützung:
-  sprintf(buf, "%llu", n);
-  print(buf);
-}
-
-void println(uint64_t n) {
-  print(n);
-  outchar(13);
-}
-void printReady() {
-  outchar(13); // Sicherstellen, dass wir in einer neuen Zeile ganz links starten
-  println("READY.");
-}
-
-void vprintf(const char *format, ...) {
-  char buf[256];
-  va_list args;
-  va_start(args, format);
-  vsnprintf(buf, sizeof(buf), format, args);
-  va_end(args);
-
-  print(buf); // Nutzt deine bestehende VGA-print Funktion
-}
-
 void cmd_cls() {
   // 1. Die aktuellen Farben für das Leeren nehmen
   uint8_t bg = getVGA(H_COL);
@@ -677,9 +580,6 @@ void drawCursor(bool state) {
     vga.drawText(px, py, buf, getVGA(F_COL), getVGA(H_COL), false);
   }
 }
-
-
-
 
 static void outchar(char c) {
   drawCursor(false);
@@ -952,16 +852,9 @@ void getln(int showReady) {
   memset(inputBuffer, 0, BUF_SIZE);
 
   if (editLine(inputBuffer, BUF_SIZE, cursor, length)) {
+    //trimLeadingSpaces(inputBuffer);                                   //führende Leerzeichen entfernen
+    txtpos = inputBuffer;                                             // Wenn Enter gedrückt wurde: Text an txtpos übergeben
 
-    txtpos = inputBuffer;                                           // Wenn Enter gedrückt wurde: Text an txtpos übergeben
-
-    bool q = false;
-    for (int i = 0; i < length; i++) {
-      if (inputBuffer[i] == '"') q = !q;
-      if (!q && inputBuffer[i] >= 'a' && inputBuffer[i] <= 'z') {   // Alles außerhalb von Anführungszeichen groß machen
-        inputBuffer[i] -= 32;
-      }
-    }
   } else {
     // Bei ESC: Zeile leeren
     inputBuffer[0] = '\0';
@@ -1034,6 +927,7 @@ void storeLine(int num, char* code) {
         lineCount--;
         printmsg("DELETED", 1);
       } else {
+        
         strncpy(program[i].text, code, LINE_LEN - 1);                                              // ÜBERSCHREIBEN
         program[i].text[LINE_LEN - 1] = '\0';
       }
@@ -1089,7 +983,7 @@ void printColoredLine(char* lineText) {
     if (currentIndent < 0) currentIndent = 0;
   }
 
-  for (int i = 0; i < currentIndent; i++) print("  ");                  // Einrückung vor der Zeile drucken, wenn noch FOR oder WHILE Schleifen da sind
+  for (int i = 0; i < currentIndent; i++) print(" ");                  // Einrückung vor der Zeile drucken, wenn noch FOR oder WHILE Schleifen da sind
 
   while (*txtpos) {
     if (*txtpos == ' ') {
@@ -1174,12 +1068,12 @@ void cmd_list() {
     if ((program[i].number >= startline) && (program[i].number <= endline)) {
       fbcolor(WHITE, 0);
       print(program[i].number);
-
+      print(' ');
       printColoredLine(program[i].text);                  //List-Zeile farbig ausgeben
 
       //fbcolor(WHITE, 0);
       zeilen++;
-      if (zeilen == 20) {
+      if (zeilen == MAX_R - 10) {
         if (waitkey()) return;
         zeilen = 0;
       }
@@ -1968,7 +1862,7 @@ void cmd_input() {
     if (*txtpos == ',') {
       txtpos++;
     } else {
-      line_terminator();
+      //line_terminator();
       return;
     }
   }
@@ -2483,11 +2377,9 @@ void cmd_files() {
         entry.close();
         continue;
       } else {
-        //if (fileName.length() < 8) print("\t");
-        //print("\t");
         x_pos = 20;                                     //horizontale Ausgabeposition festlegen
         print(entry.size());
-        //println(" Bytes");
+
 
       }
       // 2. Datum und Zeit am Ende der Zeile
@@ -2529,12 +2421,10 @@ void cmd_files() {
   println("----------------------------------------");
   print(fileCount); println(" Files found.");
 
-  print("Used memory:   ");
+  print("Used memory:    ");
   printSmartSize(usedCardBytes);
-
-  print("Free memory:");
+  print("Free memory:    ");
   printSmartSize(freeCardBytes);
-
   print("Total capacity: ");
   printSmartSize(totalCardBytes);
 
@@ -2547,12 +2437,13 @@ void printSmartSize(uint64_t bytes) {
     print((long)bytes); println(" B");
   } else if (bytes < 1048576) {
     print((long)(bytes / 1024)); println(" KB");
-  } else if (bytes < 1073741824) {
-    print((long)(bytes / 1048576)); println(" MB");
+  } else if (bytes < 1073741824.0) {
+    print((long)(bytes / 1048576.0)); println(" MB");
   } else {
-    print((float)(bytes / 1073741824.0), 2); println(" GB");
+    print((double) bytes / 1073741824.0, 2); println(" GB");
   }
 }
+
 
 void cmd_rename() {
   spaces();
@@ -2622,18 +2513,22 @@ void cmd_load() {
     // Zeile aus Datei lesen
     while (file.available() && len < 127) {
       char c = file.read();
+      
       if (c == '\n') break;
       if (c != '\r') lineBuffer[len++] = c;
     }
     lineBuffer[len] = '\0';
-
+    
     const char* p = lineBuffer;
+    
     while (*p && isspace(*p)) p++; // spaces() Ersatz für lokalen Buffer
-
+    
     if (isdigit(*p)) {
       int lineNumber = atoi(p);
       while (isdigit(*p)) p++;
+      
       // storeLine speichert den Rest der Zeile unter dieser Nummer
+      trimLeadingSpaces(p);
       storeLine(lineNumber, p);
     }
   }
@@ -3258,7 +3153,7 @@ double get_mem(int m) {
     case 5: return freeBytes;
     default:
       break;
-      
+
   }
   return 0;
 }
@@ -3285,7 +3180,7 @@ void cmd_mem() {
 }
 
 static int Test_char(char az)
-{ //println(txtpos);
+{
   // check for char az
   if (*txtpos != az)
   {
@@ -3294,7 +3189,7 @@ static int Test_char(char az)
   }
   txtpos++;
   spaces();
-  //println(txtpos);
+
   return 0;
 }
 
@@ -3316,39 +3211,7 @@ void cmd_settime()
 }
 
 //########################################################## Memory-Dump #################################################
-/*void hexMonitor(uint8_t* startAddr) {
-  int zeilen;
 
-  if (startAddr == NULL) {
-    println("Error: Null Pointer");
-    return;
-  }
-  while (1) {
-    uint32_t relativeAddr = (uint32_t)((uintptr_t)startAddr - 0x70000000);
-    vprintf("%06X: ", relativeAddr);
-    // 2. 16 Bytes in HEX
-    for (int j = 0; j < 8; j++) {
-      vprintf("%02X ", startAddr[j]);
-      print("   ");
-    }
-    // 3. 16 Bytes als ASCII
-    for (int j = 0; j < 8; j++) {
-
-      char c = startAddr[j];
-      print((c >= 32 && c <= 126) ? c : '.');
-
-    }
-    println("|");
-    startAddr += 8;
-
-    zeilen++;
-    if (zeilen == 20) {
-      if (waitkey()) break;
-    }
-    zeilen = 0;
-  }
-  }
-*/
 void hexMonitor(uint8_t* startAddr) {
   int zeilen = 0; // 1. Initialisieren!
 
@@ -3614,7 +3477,7 @@ void Basic_interpreter() {
             fbcolor(c, 0);
             break;
           }
-        
+
         case TOKEN_AND:                                        //Logisch UND
 
           break;
@@ -3888,10 +3751,29 @@ time_t getTeensy3Time() {
   return Teensy3Clock.get();
 }
 
+void trimLeadingSpaces(char* text) {
+  if (text == nullptr || text[0] == '\0') return;
+
+  int start = 0;
+  // Zähle die führenden Leerzeichen (oder andere Whitespaces)
+  while (text[start] == ' ' || text[start] == '\t') {
+    start++;
+  }
+
+  // Wenn Leerzeichen gefunden wurden, verschiebe den Rest nach vorne
+  if (start > 0) {
+    int i = 0;
+    while (text[start] != '\0') {
+      text[i++] = text[start++];
+    }
+    text[i] = '\0'; // Den String korrekt terminieren
+  }
+}
 
 bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
   char c;
   bool inEdit = true;
+  bool q = false;
 
   while (inEdit) {
     c = inchar();
@@ -3901,8 +3783,15 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
       case 10:
         buffer[length] = '\0';
         outchar(13);
+        for (int i = 0; i < length; i++) {
+          if (buffer[i] == '"') q = !q;
+          if (!q && buffer[i] >= 'a' && buffer[i] <= 'z') {   // Alles außerhalb von Anführungszeichen groß machen
+            buffer[i] -= 32;
+          }
+        }
         return true;
-
+        break;
+        
       case 27: // ESC
         return false;
 
@@ -3935,7 +3824,8 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
       case 127:
         if (cursor > 0) {
           drawCursor(false);                                                                                //Cursor ausschalten
-          for (int i = cursor - 1; i < length; i++) buffer[i] = buffer[i + 1];                              // Puffer-Logik
+          //for (int i = cursor - 1; i < length; i++) buffer[i] = buffer[i + 1];                              // Puffer-Logik
+          buffer[cursor] = '\0';
           length--;
           cursor--;
 
@@ -3966,7 +3856,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
             buffer[i] = buffer[i + 1];
           }
           length--;
-          buffer[length] = '\0';
+          buffer[length + 1] = '\0';
 
           int tempX = x_pos;
           int tempY = y_pos;
@@ -3976,7 +3866,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
           }
 
           vga.drawText(x_pos * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);                     // Das überflüssige Zeichen am Ende der Kette löschen
-
+          vga.drawText((x_pos + 8) * 8, y_pos * 8, " ", getVGA(F_COL), getVGA(H_COL), false);                     // Das überflüssige Zeichen am Ende der Kette löschen
           x_pos = tempX;                                                                                    // Cursor wieder an die gemerkte Stelle zurücksetzen
           y_pos = tempY;
           drawCursor(cursor_on_off);
@@ -4014,13 +3904,10 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
 
 void cmd_edit() {
 
-
-  int targetLine = (int)expression(); // Zeilennummer einlesen
+  int targetLine = (int)expression();                                   // Zeilennummer einlesen
   int foundIndex = -1;
 
-
-  // 1. Zeile im Speicher suchen
-  for (int i = 0; i < lineCount; i++) {
+  for (int i = 0; i < lineCount; i++) {                                 // 1. Zeile im Speicher suchen
     if (program[i].number == targetLine) {
       foundIndex = i;
       break;
@@ -4032,22 +3919,18 @@ void cmd_edit() {
     return;
   }
 
-  // 2. Zeile in den inputBuffer laden
-  memset(inputBuffer, 0, BUF_SIZE);
+  memset(inputBuffer, 0, BUF_SIZE);                                     // Zeile in den inputBuffer laden
   strncpy(inputBuffer, program[foundIndex].text, BUF_SIZE - 1);
 
   int length = strlen(inputBuffer);
-  int cursor = length; // Cursor ans Ende setzen
+  int cursor = length;                                                  // Cursor ans Ende setzen
 
-  // 3. Editor auf dieser Zeile starten
-  // Wir geben die Zeilennummer aus, damit der User weiß, wo er ist
-  print(targetLine); print(" ");
+  print(targetLine); print(" ");                                        // Editor auf dieser Zeile starten
   print(inputBuffer);
 
-  // Jetzt den Line-Editor nutzen (editLine gibt true bei Enter zurück)
-  if (editLine(inputBuffer, BUF_SIZE, cursor, length)) {
-    // Die bearbeitete Zeile wieder speichern
-    storeLine(targetLine, inputBuffer);
+  if (editLine(inputBuffer, BUF_SIZE, cursor, length)) {                // Jetzt den Line-Editor nutzen (editLine gibt true bei Enter zurück)
+    
+    storeLine(targetLine, inputBuffer);                                 // Die bearbeitete Zeile wieder speichern
   } else {
     println(" Aborted.");
   }
@@ -4057,30 +3940,60 @@ void cmd_edit() {
 
 void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
   // ZUERST: Unicode prüfen.
-  if (unicode > 31) {
-    lastUsbChar = unicode;
-    return; // Funktion beenden, 'M' ist sicher gespeichert.
-  }
+  uint8_t mod = keyboard1.getModifiers();
+  bool shift = (mod & 0x02) || (mod & 0x20);
+  bool altGr = (mod & 0x40);
+
 
   // NUR WENN unicode 0 ist (Sondertasten), prüfen wir den Keycode
   if (unicode == 0) {
+
     switch (keycode) {
       case 41: lastUsbChar = 27;  break_marker = true; return; // ESC
     }
   }
 
+  if (altGr) {
+    switch (keycode) {
+      case 36: lastUsbChar = 0x7B; return; // Taste 7 - {
+      case 37: lastUsbChar = 0x5B; return; // Taste 8 - [
+      case 38: lastUsbChar = 0x5D; return; // Taste 9 - ]
+      case 39: lastUsbChar = 0x7D; return; // Taste 0 - }
+      case 100: lastUsbChar = 0x7C; return; // Taste < - |
+    }
+  }
+
+
+
+  // 2. Logik für die < > Taste (ohne AltGr)
+  if (keycode == 100) {
+    if (shift) lastUsbChar = 0x3C;            //(">");
+    else lastUsbChar = 0x3E;                  //("<");
+    return;
+  }
+
+  if (keycode == 53) {
+    lastUsbChar = 0x5E;                       //("^");
+    return;
+  }
+
   // ENTER & BACKSPACE separat abfangen (da unicode hier oft 0, 10 oder 13 ist)
-  if (keycode == 40) {
+  if (keycode == 40) {                       //Enter
     lastUsbChar = 13;
     return;
   }
-  if (keycode == 42) {
+  if (keycode == 42) {                        //Backspace
     lastUsbChar = 8;
     return;
   }
-  if (keycode == 41) {
+
+  if (keycode == 41) {                        //ESC
     lastUsbChar = 27;
     break_marker = true;
+    return;
+  }
+  if (unicode > 31) {
+    lastUsbChar = unicode;
     return;
   }
 }
@@ -4101,7 +4014,7 @@ void setup() {
   //Serial.begin(115200);
   //while (!Serial);
 
-  vga_error_t err = vga.begin(VGA_MODE_640x240);//320x240);//352x240);//352x240);
+  vga_error_t err = vga.begin(VGA_MODE_640x480);//352x240);
   if (err != 0)
   {
     println("fatal error");
