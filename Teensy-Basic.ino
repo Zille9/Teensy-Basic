@@ -10,10 +10,17 @@
 //                                                                                                                                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#define BasicVersion "1.5"
-#define BuiltTime "15.04.2026"
+#define BasicVersion "1.6"
+#define BuiltTime "20.04.2026"
 
 //Logbuch
+//Version 1.6 20.04.2026                   -Basic-Programmspeicher und Bildschirm-Array in den PSRAM verschoben -> dadurch werden an die 150kb im Teensy frei
+//                                         -Umstellung der Bildschirmausgabe auf 640x480 Pixel
+//                                         -Korrektur in storeline() -> führende Leerzeichen (nach der Zeilennummer) werden jetzt beim Speichern entfernt
+//                                         -Funktion GPX(x,y) -> gibt den Farbwert des Pixels an Position x,y zurück, hinzugefügt
+//                                         -optische Änderungen an der MEM-Ausgabe
+//                                         -Cursor-Handling bei DIR-Ausgabe geändert ->  es wurden öfter Cursorblöcke am Ende einer Zeile ausgegeben
+//
 //Version 1.5 15.04.2026                   -Befehl RECT nach anfänglichen Schwierigkeiten eingebunden -> RECT x,y,w,h,fill
 //                                         -Befehl LINE eingebunden -> LINE x,y,xx,yy
 //                                         -Befehl CIRC eingebunden -> CIRC x,y,w,h,fill
@@ -69,8 +76,7 @@ extern "C" uint8_t external_psram_size;
 
 #include <VGA_t4.h>
 VGA_T4 vga;
-int vga_cursor_x = 0;
-int vga_cursor_y = 0;
+
 vga_pixel vga_fg = VGA_RGB(255, 255, 255); // Weiß
 vga_pixel vga_bg = VGA_RGB(0, 0, 170);     // C64-Blau
 static int fb_width, fb_height;
@@ -363,6 +369,7 @@ enum {
   TOKEN_INKEY,
   TOKEN_STRING,      //letzter Funktions-Befehl
   TOKEN_EXP,
+  TOKEN_GPX,
   TOKEN_END
 };
 
@@ -464,11 +471,12 @@ Keyword functions[] = {
   {"INKEY", TOKEN_INKEY},
   {"STRING$", TOKEN_STRING},
   {"EXP", TOKEN_EXP},
+  {"GPX", TOKEN_GPX},
   {NULL, 0}
 };
 
 
-#define MAX_LINES 1560
+#define MAX_LINES 1650
 #define LINE_LEN 80
 
 struct BasicLine {
@@ -582,6 +590,7 @@ void drawCursor(bool state) {
 }
 
 static void outchar(char c) {
+  
   drawCursor(false);
   if (x_pos < 0) x_pos = 0;
   if (y_pos < 0) y_pos = 0;
@@ -927,7 +936,7 @@ void storeLine(int num, char* code) {
         lineCount--;
         printmsg("DELETED", 1);
       } else {
-        
+
         strncpy(program[i].text, code, LINE_LEN - 1);                                              // ÜBERSCHREIBEN
         program[i].text[LINE_LEN - 1] = '\0';
       }
@@ -1352,6 +1361,16 @@ double factor() {
           }
           // Gibt Speicherwerte des Basic-Interpreters zurück
           return 0;
+        }
+      case TOKEN_GPX:
+        spaces();
+        if (*txtpos == '(') {
+          txtpos++; // Öffnende Klammer (
+          int x = expression();
+          if (*txtpos == ',') txtpos++;
+          int y = expression();
+          if (*txtpos == ')') txtpos++;
+          return vga.getPixel(x, y);
         }
       // Gruppe der mathematischen Funktionen
       case TOKEN_RND: case TOKEN_SQR: case TOKEN_SIN: case TOKEN_COS:
@@ -2326,7 +2345,9 @@ void cmd_return() {
 void cmd_files() {
   int zeilen = 0;
   spaces();
-  drawCursor(false);
+  bool tmp_cur = cursor_on_off;
+  cursor_on_off = false;
+  //drawCursor(cursor_on_off);
 
   String filter = "";
   if (*txtpos == '"' || isalpha(*txtpos)) {
@@ -2336,7 +2357,7 @@ void cmd_files() {
 
   File root = SD.open("/");
   if (!root) {
-    println("Fehler: SD-Karte nicht bereit!");
+    syntaxerror(sderrormsg);
     return;
   }
 
@@ -2344,12 +2365,12 @@ void cmd_files() {
   int fileCount = 0;
   uint64_t totalFilesSize = 0;
 
-  print("Files on SD-Crad");
+  print("Files on SD-Card");
   if (filter != "") {
     print(" (Filter: *"); print(filter); print("*)");
   }
   println(":");
-
+  println("----------------------------------------");
   while (true) {
     File entry = root.openNextFile();
     if (!entry) break;
@@ -2399,7 +2420,7 @@ void cmd_files() {
       }
 
       zeilen++;
-      if (zeilen == 20) {
+      if (zeilen == MAX_R - 10) {
         if (waitkey()) {
           entry.close();
           break;
@@ -2428,6 +2449,7 @@ void cmd_files() {
   print("Total capacity: ");
   printSmartSize(totalCardBytes);
 
+  cursor_on_off = tmp_cur;
   drawCursor(cursor_on_off);
 }
 
@@ -2513,20 +2535,20 @@ void cmd_load() {
     // Zeile aus Datei lesen
     while (file.available() && len < 127) {
       char c = file.read();
-      
+
       if (c == '\n') break;
       if (c != '\r') lineBuffer[len++] = c;
     }
     lineBuffer[len] = '\0';
-    
+
     const char* p = lineBuffer;
-    
+
     while (*p && isspace(*p)) p++; // spaces() Ersatz für lokalen Buffer
-    
+
     if (isdigit(*p)) {
       int lineNumber = atoi(p);
       while (isdigit(*p)) p++;
-      
+
       // storeLine speichert den Rest der Zeile unter dieser Nummer
       trimLeadingSpaces(p);
       storeLine(lineNumber, p);
@@ -3162,17 +3184,17 @@ void cmd_mem() {
   char buffer[30];
   printmsg("--- BASIC PROGRAM MEMORY ---", 1);
   itoa(get_mem(1), buffer, 10);
-  printmsg("Zeilen belegt: ", 0); printmsg(buffer, 0);
+  printmsg("Lines used    : ", 0); printmsg(buffer, 1);
   ltoa(get_mem(2), buffer, 10);
-  printmsg(" / Frei: ", 0); printmsg(buffer, 1);
+  printmsg("Free          : ", 0); printmsg(buffer, 1);
   ltoa(get_mem(3), buffer, 10);
-  printmsg("Basic-RAM: ", 0); printmsg(buffer, 1);
+  printmsg("Basic-RAM     : ", 0); printmsg(buffer, 1);
   ltoa(get_mem(4), buffer, 10);
-  printmsg("Basic-RAM: ", 0); printmsg(buffer, 0);
-  printmsg(" Bytes belegt.", 1);
+  printmsg("Basic-RAM     : ", 0); printmsg(buffer, 0);
+  printmsg(" Bytes used.", 1);
 
   // Dynamischer Speicher (für deine 3D-Arrays)
-  printmsg("Freier Basic-RAM: ", 0);
+  printmsg("Free Basic-RAM: ", 0);
   dtostrf(get_mem(5), 6, 0,  buffer);
   //dtostrf(external_psram_size *1024 *1024,12,0,buffer);
   printmsg(buffer, 0); // Die Funktion von oben
@@ -3238,7 +3260,7 @@ void hexMonitor(uint8_t* startAddr) {
     startAddr += 8;
     zeilen++;
 
-    if (zeilen >= 20) { // 2. Check gegen 20
+    if (zeilen == MAX_R - 10) { // 2. Check gegen 20
       if (waitkey()) break; // Falls waitkey true (z.B. ESC), beenden
       zeilen = 0; // 3. NUR HIER zurücksetzen!
     }
@@ -3449,7 +3471,7 @@ void Basic_interpreter() {
         case TOKEN_RUN:   cmd_run();   break;
         case TOKEN_NEW:   cmd_new();   break;
         case TOKEN_VARS:  doVars();    break;
-        case TOKEN_STOP:  isRunning = false; println("END."); break;
+        case TOKEN_STOP:  isRunning = false; break;
         case TOKEN_REM:   skip_line(); break;
         case TOKEN_FILES:
         case TOKEN_DIR:  cmd_files(); break;
@@ -3791,7 +3813,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
         }
         return true;
         break;
-        
+
       case 27: // ESC
         return false;
 
@@ -3872,6 +3894,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
           drawCursor(cursor_on_off);
         }
         break;
+      
       default:
 
         if (c >= 32 && length < bufferSize - 1) {
@@ -3929,7 +3952,7 @@ void cmd_edit() {
   print(inputBuffer);
 
   if (editLine(inputBuffer, BUF_SIZE, cursor, length)) {                // Jetzt den Line-Editor nutzen (editLine gibt true bei Enter zurück)
-    
+
     storeLine(targetLine, inputBuffer);                                 // Die bearbeitete Zeile wieder speichern
   } else {
     println(" Aborted.");
