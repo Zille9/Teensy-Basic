@@ -109,5 +109,5 @@ void vprintf(const char *format, ...) {
   vsnprintf(buf, sizeof(buf), format, args);
   va_end(args);
 
-  print((const char*)buf); //print(buf); // Nutzt deine bestehende VGA-print Funktion
+  print((const char*)buf); 
 }
