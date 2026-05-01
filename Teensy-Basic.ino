@@ -11,10 +11,24 @@
 //                                                                                                                                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#define BasicVersion "1.7"
-#define BuiltTime "26.04.2026"
+#define BasicVersion "1.9"
+#define BuiltTime "01.05.2026"
 
 //Logbuch
+//Version 1.9 01.05.2026                   -Umstellung der Token-Suche auf binäre Suche
+//                                         -dadurch wurde die Geschwindigkeit mehr als verdoppelt :-)
+//                                         -Umbau der cmd_print auf Token jetzt auch funktionsfähig.
+//                                         -lange Variablennamen mögich, es werden aber nur die ersten beiden Zeichen genutzt
+//                                         -cmd_save mit Überschreib-Abfrage ergänzt
+//                                         -362514 Zeilen/sek. (Fastest)
+//
+//Version 1.8 26.04.2026                   -USING für formatierte Ausgabe von Zahlen integriert PRINT USING"##.##",23.456 -> 23.46
+//                                         -funktioniert auch in Kombination mit anderen Print-Anweisungen
+//                                         -Farben des Startbildschirms geändert (Hintergrund Atari800 - blau)
+//                                         -DIR/FILES - Ausgabe angepasst, durch feste x_pos Zuweisungen wurde die Darstellung im WINDOW zerstört
+//                                         -jetzt sollte die WINDOW-Funktion endlich korrekt funktionieren
+//                                         -162570 Zeilen/sek. (Fastest)
+//
 //Version 1.7 24.04.2026                   -Fehler in der Syntax-Highlightning Funktion behoben -> Strings wurden nicht korrekt farblich beendet
 //                                         -Fensterverwaltung funktioniert jetzt zufrieden stellend 6 Fenster sind möglich, das Hauptfenster (0) kann nicht umdefiniert werden
 //                                         -Reset-Funktion der Fenster-Parameter in clear_all hinzugefügt - bei NEW, LOAD oder RUN werden die Parameter auf grundwerte gesetzt
@@ -89,17 +103,12 @@ VGA_T4 vga;
 #include <JPEGDEC.h>                    //JPEG-Decoder
 JPEGDEC jpeg;
 
-
-
 #define BUF_SIZE 80
 char inputBuffer[BUF_SIZE];
-static char *txtpos, *list_line, *tmptxt;
+static char *txtpos;
 bool inQuotes = false;
 extern "C" uint8_t external_psram_size;
 
-
-vga_pixel vga_fg = VGA_RGB(255, 255, 255); // Weiß
-vga_pixel vga_bg = VGA_RGB(0, 0, 170);     // C64-Blau
 static int fb_width, fb_height;
 int currentIndent = 0;
 
@@ -159,8 +168,12 @@ volatile int lastUsbChar = -1;              //Merker für die letzte gedrückte 
 #define CTRLH 0x08
 #define CTRLS 0x13
 
-static char *current_line;
-typedef short unsigned LINENUM;
+//static char *current_line;
+//typedef short unsigned LINENUM;
+
+//**************************************************Audio-Einstellungen**************************************************************
+unsigned long soundEndTime[3] = {0, 0, 0};
+//********************************************************************************************************************************
 
 #define MAX_GOSUB_STACK 25
 struct GosubStack {
@@ -172,7 +185,8 @@ GosubStack gosubStack[MAX_GOSUB_STACK];
 int gosubStackPtr = 0;
 
 bool break_marker = false;
-bool jumped = false;
+bool jumped  = false;
+bool isError = false;
 double lastNumberValue = 0;
 int precisionValue = 6; // Standardmäßig 6 Stellen
 
@@ -185,8 +199,8 @@ char lastVarName;  // Speichert den Buchstaben der aktuellen Variable (A-Z)
 // 26 Buchstaben x 37 Folgezeichen (A-Z, 0-9, none)
 String stringVars[26][37];
 bool isStringVar = false; // Globales Flag
-char lastStringValue[80];
-#define MAX_STRING_LEN 64
+char lastStringValue[BUF_SIZE];
+#define MAX_STRING_LEN BUF_SIZE
 
 // Arrays 3 Dimensionen Numerisch und String
 #define MAX_ARRAYS 40
@@ -254,7 +268,7 @@ struct BasicWindow {
 
 #define MAX_WINDOWS 7
 BasicWindow windows[MAX_WINDOWS];
-int currentWinIdx = 0; // Welches Fenster wird gerade mit PRINT beschrieben?
+int currentWinIdx = 0;        // Welches Fenster wird gerade mit PRINT beschrieben?
 
 struct RenumMap {             //RENUM - Funktion
   int oldNum;
@@ -304,7 +318,7 @@ int dataLineIdx = 0;   // In welcher Zeile im program[] Array sind wir?
 char* dataPtr = NULL;  // Wo genau in dieser Zeile steht der nächste Wert?
 
 enum {
-  TOKEN_ERROR,
+  TOKEN_ERROR,            //0
   TOKEN_PRINT,            //erster Basic-Befehl
   TOKEN_GOTO,
   TOKEN_LIST,
@@ -314,7 +328,7 @@ enum {
   TOKEN_STRING_LITERAL,   //Strings
   TOKEN_NEW,
   TOKEN_FOR,
-  TOKEN_TO,
+  TOKEN_TO,               //10
   TOKEN_NEXT,
   TOKEN_STEP,
   TOKEN_VARS,
@@ -324,7 +338,7 @@ enum {
   TOKEN_REM,
   TOKEN_INPUT,
   TOKEN_DATA,
-  TOKEN_READ,
+  TOKEN_READ,             //20
   TOKEN_RESTORE,
   TOKEN_FILES,
   TOKEN_DIR,
@@ -334,7 +348,7 @@ enum {
   TOKEN_DIM,
   TOKEN_GOSUB,
   TOKEN_RETURN,
-  TOKEN_ELSE,
+  TOKEN_ELSE,             //30
   TOKEN_WHILE,
   TOKEN_WEND,
   TOKEN_RENAME,
@@ -344,17 +358,17 @@ enum {
   TOKEN_MEM,
   TOKEN_ON,
   TOKEN_STIME,
-  TOKEN_DUMP,
+  TOKEN_DUMP,             //40
   TOKEN_DEFN,
   TOKEN_CLS,
   TOKEN_COL,
   TOKEN_PSET,
-  TOKEN_TAB,       //TOKEN nur für Listausgabe relevant
-  TOKEN_AT,        //TOKEN nur für Listausgabe relevant
+  TOKEN_TAB,
+  TOKEN_AT,
   TOKEN_TRON,
   TOKEN_TROFF,
   TOKEN_PIC,
-  TOKEN_LINE,
+  TOKEN_LINE,             //50
   TOKEN_RECT,
   TOKEN_CIRC,
   TOKEN_PEN,
@@ -363,7 +377,9 @@ enum {
   TOKEN_AND,
   TOKEN_OR,
   TOKEN_WINDOW,
-  TOKEN_RENUM,     //letzter Basic-Befehl
+  TOKEN_RENUM,
+  TOKEN_USING,            //60
+  TOKEN_SID,       //letzter Basic-Befehl
   TOKEN_RND,       //erster Funktions-Befehl
   TOKEN_SQR,
   TOKEN_SIN,
@@ -372,7 +388,7 @@ enum {
   TOKEN_INT,
   TOKEN_PI,
   TOKEN_DEG,
-  TOKEN_RAD,
+  TOKEN_RAD,              //70
   TOKEN_SGN,
   TOKEN_LEN,
   TOKEN_ASC,
@@ -382,7 +398,7 @@ enum {
   TOKEN_TIMER,
   TOKEN_LEFT,
   TOKEN_RIGHT,
-  TOKEN_MID,
+  TOKEN_MID,              //80
   TOKEN_SPC,
   TOKEN_STR,
   TOKEN_CHR,
@@ -392,18 +408,18 @@ enum {
   TOKEN_GTIME,
   TOKEN_TIME,
   TOKEN_DATE,
-  TOKEN_FN,
+  TOKEN_FN,               //90
   TOKEN_INKEY,
   TOKEN_STRING,
   TOKEN_EXP,
   TOKEN_GPX,
   TOKEN_MAP,
-  TOKEN_CONSTRAIN,  //letzter Funktions-Befehl
+  TOKEN_CONSTRAIN,
   TOKEN_MAX,
   TOKEN_MIN,
   TOKEN_LOG,
-  TOKEN_LN,
-  TOKEN_TAN,
+  TOKEN_LN,               //100
+  TOKEN_TAN,              //letzter Funktions-Befehl
   TOKEN_END
 };
 
@@ -413,109 +429,114 @@ struct Keyword {
 };
 
 Keyword commands[] = {
-  {"PRINT", TOKEN_PRINT},
-  {"GOTO", TOKEN_GOTO},
-  {"LIST", TOKEN_LIST},
-  {"RUN",   TOKEN_RUN},
-  {"NEW",  TOKEN_NEW},
-  {"FOR",  TOKEN_FOR},
-  {"TO",    TOKEN_TO},
-  {"NEXT", TOKEN_NEXT},
-  {"STEP", TOKEN_STEP},
-  {"VARS", TOKEN_VARS},
-  {"IF",   TOKEN_IF},
-  {"THEN",  TOKEN_THEN},
-  {"END", TOKEN_STOP},
-  {"REM", TOKEN_REM},
-  {"INPUT", TOKEN_INPUT},
-  {"DATA", TOKEN_DATA},
-  {"READ", TOKEN_READ},
-  {"RESTORE", TOKEN_RESTORE},
-  {"FILES", TOKEN_FILES},
-  {"DIR", TOKEN_DIR},
-  {"LOAD", TOKEN_LOAD},
-  {"SAVE", TOKEN_SAVE},
-  {"DELETE", TOKEN_DELETE},
-  {"DIM", TOKEN_DIM},
-  {"GOSUB", TOKEN_GOSUB},
-  {"RETURN", TOKEN_RETURN},
-  {"ELSE", TOKEN_ELSE},
-  {"WHILE", TOKEN_WHILE},
-  {"WEND",  TOKEN_WEND},
-  {"RENAME", TOKEN_RENAME},
-  {"COPY", TOKEN_COPY},
-  {"DWRITE", TOKEN_DWRITE},
-  {"PAUSE", TOKEN_PAUSE},
-  {"MEM", TOKEN_MEM},
-  {"ON", TOKEN_ON},
-  {"STIME", TOKEN_STIME},
-  {"DUMP", TOKEN_DUMP},
-  {"DEFN", TOKEN_DEFN},
+  {"AND", TOKEN_AND},
+  {"AT", TOKEN_AT},
+  {"CIRC", TOKEN_CIRC},
   {"CLS", TOKEN_CLS},
   {"COL", TOKEN_COL},
-  {"PSET", TOKEN_PSET},
-  {"TAB", TOKEN_TAB},
-  {"AT", TOKEN_AT},
-  {"TRON", TOKEN_TRON},
-  {"TROFF", TOKEN_TROFF},
-  {"PIC", TOKEN_PIC},
-  {"LINE", TOKEN_LINE},
-  {"RECT", TOKEN_RECT},
-  {"CIRC", TOKEN_CIRC},
-  {"PEN", TOKEN_PEN},
+  {"COPY", TOKEN_COPY},
   {"CUR", TOKEN_CUR},
+  {"DATA", TOKEN_DATA},
+  {"DEFN", TOKEN_DEFN},
+  {"DEL", TOKEN_DELETE},
+  {"DIM", TOKEN_DIM},
+  {"DIR", TOKEN_DIR},
+  {"DUMP", TOKEN_DUMP},
+  {"DWRITE", TOKEN_DWRITE},
   {"EDIT", TOKEN_EDIT},
-  {"AND", TOKEN_AND},
+  {"ELSE", TOKEN_ELSE},
+  {"END", TOKEN_STOP},
+  {"FILES", TOKEN_FILES},
+  {"FOR", TOKEN_FOR},
+  {"GOSUB", TOKEN_GOSUB},
+  {"GOTO", TOKEN_GOTO},
+  {"IF", TOKEN_IF},
+  {"INPUT", TOKEN_INPUT},
+  {"LINE", TOKEN_LINE},
+  {"LIST", TOKEN_LIST},
+  {"LOAD", TOKEN_LOAD},
+  {"MEM", TOKEN_MEM},
+  {"NEW", TOKEN_NEW},
+  {"NEXT", TOKEN_NEXT},
+  {"ON", TOKEN_ON},
   {"OR", TOKEN_OR},
-  {"WINDOW", TOKEN_WINDOW},
+  {"PAUSE", TOKEN_PAUSE},
+  {"PEN", TOKEN_PEN},
+  {"PIC", TOKEN_PIC},
+  {"PRINT", TOKEN_PRINT},
+  {"PSET", TOKEN_PSET},
+  {"READ", TOKEN_READ},
+  {"RECT", TOKEN_RECT},
+  {"REM", TOKEN_REM},
+  {"RENAME", TOKEN_RENAME},
   {"RENUM", TOKEN_RENUM},
+  {"RESTORE", TOKEN_RESTORE},
+  {"RETURN", TOKEN_RETURN},
+  {"RUN", TOKEN_RUN},
+  {"SAVE", TOKEN_SAVE},
+  {"SID", TOKEN_SID},
+  {"STEP", TOKEN_STEP},
+  {"STIME", TOKEN_STIME},
+  {"TAB", TOKEN_TAB},
+  {"THEN", TOKEN_THEN},
+  {"TO", TOKEN_TO},
+  {"TROFF", TOKEN_TROFF},
+  {"TRON", TOKEN_TRON},
+  {"USING", TOKEN_USING},
+  {"VARS", TOKEN_VARS},
+  {"WEND", TOKEN_WEND},
+  {"WHILE", TOKEN_WHILE},
+  {"WINDOW", TOKEN_WINDOW},
   {NULL, 0}
 };
 
 Keyword functions[] = {
-  {"RND", TOKEN_RND},
-  {"SQR", TOKEN_SQR},
-  {"SIN", TOKEN_SIN},
-  {"COS", TOKEN_COS},
   {"ABS", TOKEN_ABS},
-  {"INT", TOKEN_INT},
-  {"PI",  TOKEN_PI},
-  {"DEG", TOKEN_DEG},
-  {"RAD", TOKEN_RAD},
-  {"SGN", TOKEN_SGN},
-  {"LEN", TOKEN_LEN},
   {"ASC", TOKEN_ASC},
-  {"VAL", TOKEN_VAL},
-  {"DREAD", TOKEN_DREAD},
-  {"FRE", TOKEN_FRE},
-  {"TIMER", TOKEN_TIMER},
-  {"LEFT$", TOKEN_LEFT},
-  {"RIGHT$", TOKEN_RIGHT},
-  {"MID$", TOKEN_MID},
-  {"SPC", TOKEN_SPC},
-  {"STR$", TOKEN_STR},
-  {"CHR$", TOKEN_CHR},
   {"BIN", TOKEN_BIN},
-  {"HEX", TOKEN_HEX},
-  {"OCT", TOKEN_OCT},
-  {"GTIME", TOKEN_GTIME},
-  {"TIME$", TOKEN_TIME},
-  {"DATE$", TOKEN_DATE},
-  {"FN", TOKEN_FN},
-  {"INKEY", TOKEN_INKEY},
-  {"STRING$", TOKEN_STRING},
-  {"EXP", TOKEN_EXP},
-  {"GPX", TOKEN_GPX},
-  {"MAP", TOKEN_MAP},
+  {"CHR$", TOKEN_CHR},
   {"CONS", TOKEN_CONSTRAIN},
-  {"MAX", TOKEN_MAX},
-  {"MIN", TOKEN_MIN},
-  {"LOG", TOKEN_LOG},
+  {"COS", TOKEN_COS},
+  {"DATE$", TOKEN_DATE},
+  {"DEG", TOKEN_DEG},
+  {"DREAD", TOKEN_DREAD},
+  {"EXP", TOKEN_EXP},
+  {"FN", TOKEN_FN},
+  {"FRE", TOKEN_FRE},
+  {"GPX", TOKEN_GPX},
+  {"GTIME", TOKEN_GTIME},
+  {"HEX", TOKEN_HEX},
+  {"INKEY", TOKEN_INKEY},
+  {"INT", TOKEN_INT},
+  {"LEFT$", TOKEN_LEFT},
+  {"LEN", TOKEN_LEN},
   {"LN", TOKEN_LN},
+  {"LOG", TOKEN_LOG},
+  {"MAP", TOKEN_MAP},
+  {"MAX", TOKEN_MAX},
+  {"MID$", TOKEN_MID},
+  {"MIN", TOKEN_MIN},
+  {"OCT", TOKEN_OCT},
+  {"PI", TOKEN_PI},
+  {"RAD", TOKEN_RAD},
+  {"RIGHT$", TOKEN_RIGHT},
+  {"RND", TOKEN_RND},
+  {"SGN", TOKEN_SGN},
+  {"SIN", TOKEN_SIN},
+  {"SPC", TOKEN_SPC},
+  {"SQR", TOKEN_SQR},
+  {"STR$", TOKEN_STR},
+  {"STRING$", TOKEN_STRING},
   {"TAN", TOKEN_TAN},
+  {"TIME$", TOKEN_TIME},
+  {"TIMER", TOKEN_TIMER},
+  {"VAL", TOKEN_VAL},
   {NULL, 0}
 };
 
+// Berechnet die Anzahl der Einträge (ohne den NULL-Eintrag am Ende)
+const int numCommands = (sizeof(commands) / sizeof(Keyword)) - 1;
+const int numFunctions = (sizeof(functions) / sizeof(Keyword)) - 1;
 
 #define MAX_LINES 1650
 #define LINE_LEN 80
@@ -600,12 +621,12 @@ void cmd_cls() {
     for (int r = y_min + 1; r < y_max; r++) {
       for (int c = x_min; c < x_max; c++) {
         screenBuffer[r][c] = ' ';
-        colorBuffer_F[r][c] = fg;
-        colorBuffer_H[r][c] = bg;
+        colorBuffer_F[r][c] = windows[currentWinIdx].fcolor;
+        colorBuffer_H[r][c] = windows[currentWinIdx].bcolor;
 
         // Pixel auf dem Display löschen (8x8 Zeichenblock)
-        vga.drawText(c * 8, r * 8, " ", windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor, false);
-        //vga.fillRect(c * 8, r * 8, 8, 8, bg);
+        //vga.drawText(c * 8, r * 8, " ", windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor, false);
+        vga.drawRect(c * 8, r * 8, 8, 8, windows[currentWinIdx].bcolor);
       }
     }
     // Cursor an den Anfang des Fensters setzen (unter die Titelzeile)
@@ -615,35 +636,10 @@ void cmd_cls() {
 
   drawCursor(cursor_on_off);
 }
-/*
-void drawCursor(bool state) {
-  // Sicherheitscheck gegen Buffer-Überlauf
-  if (x_pos >= MAX_C || y_pos >= MAX_R || x_pos < 0 || y_pos < 0) return;
 
-  int px = x_pos * 8;
-  int py = y_pos * 8;
-
-  if (state) {
-    // Cursor an: Invertierte Farben des aktuellen FENSTERS
-    // Wir nehmen Vordergrundfarbe als Hintergrund und umgekehrt
-    vga.drawText(px, py, " ", windows[currentWinIdx].bcolor, windows[currentWinIdx].fcolor, false);
-  } else {
-    // Cursor aus: Zeichen UND Farben aus dem Buffer wiederherstellen
-    char c = screenBuffer[y_pos][x_pos];
-    uint8_t fg = colorBuffer_F[y_pos][x_pos];
-    uint8_t bg = colorBuffer_H[y_pos][x_pos];
-
-    static char buf[2] = {0, 0};
-    buf[0] = (c <= 31) ? ' ' : c; // Steuerzeichen als Leerzeichen
-    buf[1] = '\0';
-
-    vga.drawText(px, py, buf, fg, bg, false);
-  }
-}
-*/
 void drawCursor(bool state) {
   int x_min, x_max, y_min, y_max;
-  
+
   // Grenzwerte wie in outchar berechnen
   if (currentWinIdx == 0) {
     x_min = 0; y_min = 0; x_max = MAX_C - 1; y_max = MAX_R - 1;
@@ -656,7 +652,7 @@ void drawCursor(bool state) {
 
   // Sicherheitscheck: Nur zeichnen, wenn wir INNERHALB des Schreibbereichs sind
   if (x_pos < x_min || x_pos > x_max || y_pos < y_min || y_pos > y_max) {
-    return; 
+    return;
   }
 
   int px = x_pos * 8;
@@ -668,7 +664,7 @@ void drawCursor(bool state) {
     if (c < 32) c = ' ';
     uint8_t fg = colorBuffer_F[y_pos][x_pos];
     uint8_t bg = colorBuffer_H[y_pos][x_pos];
-    
+
     char buf[2] = {c, 0};
     vga.drawText(px, py, buf, bg, fg, false); // Invertiert: bg/fg vertauscht
   } else {
@@ -681,15 +677,16 @@ void drawCursor(bool state) {
     char buf[2] = {c, 0};
     vga.drawText(px, py, buf, fg, bg, false);
   }
+  yield();
 }
 
 static void outchar(char c) {
   drawCursor(false);
 
-char buffer[10]; // Puffer muss groß genug für die Zahl + Nullterminierung sein
-
   // 1. GRENZEN DEFINIEREN
-  int x_min, x_max, y_min, y_max;
+  int x_min, x_max;
+  int y_min, y_max;
+
   if (currentWinIdx == 0) {
     x_min = 0; y_min = 0; x_max = MAX_C; y_max = MAX_R - 1;
   } else {
@@ -698,27 +695,29 @@ char buffer[10]; // Puffer muss groß genug für die Zahl + Nullterminierung sei
     x_max = windows[currentWinIdx].w - 1;
     y_max = windows[currentWinIdx].h - 2; // Letzte Zeile ÜBER dem Rahmen
   }
-//vga.drawText(10, 200, itoa(x_pos,buffer,10), windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor, false);
 
-  // 2. SPEZIALZEICHEN
+
   if (c == 13) { // ENTER
     x_pos = x_min;
     y_pos++;
   } else if (c == 10) {
-    return; // Linefeed ignorieren
-  } else {
-    // 3. ZEICHEN SCHREIBEN
-    // Sicherstellen, dass wir innerhalb der Grenzen sind bevor wir schreiben
-    if (y_pos > y_max) y_pos = y_max; 
-    if (x_pos >= x_max) { x_pos = x_min; y_pos++; }
 
-    // Scroll-Check BEVOR wir den Buffer beschreiben
+    return;
+  } else {
     if (y_pos > y_max) {
-      checkScroll();
       y_pos = y_max;
     }
 
-    // Jetzt sicher in den Buffer schreiben
+    if (x_pos > x_max) {
+      x_pos = x_min;
+      y_pos++;
+    }
+
+    if (y_pos > y_max) {
+      Scroll();
+      y_pos = y_max;
+    }
+
     screenBuffer[y_pos][x_pos] = c;
     colorBuffer_F[y_pos][x_pos] = windows[currentWinIdx].fcolor;
     colorBuffer_H[y_pos][x_pos] = windows[currentWinIdx].bcolor;
@@ -730,115 +729,20 @@ char buffer[10]; // Puffer muss groß genug für die Zahl + Nullterminierung sei
     x_pos++;
   }
 
-  // 4. FINALE KORREKTUR NACH ENTER ODER ZEICHENFOLGE
-  // Falls x_pos oder y_pos durch die Operationen oben rausgerutscht sind:
-  if (x_pos >= x_max) { x_pos = x_min; y_pos++; }
+  if (x_pos >= x_max) {
+    x_pos = x_min;
+    y_pos++;
+  }
   if (y_pos > y_max) {
-    checkScroll();
+    Scroll();
     y_pos = y_max;
   }
 
   drawCursor(cursor_on_off);
+
 }
 
-
-/*
-static void outchar(char c) {  /Original
-  drawCursor(false);
-
-  // Grenzen auf den INNENRAUM festlegen (1 Pixel/Zeile Abstand zum Rahmen)
-  int x_min, y_min, x_max, y_max;
-
-  if (currentWinIdx == 0) {
-    x_min = 0; y_min = 0;
-    x_max = MAX_C; y_max = MAX_R;
-  } else {
-    x_min = windows[currentWinIdx].x + 1; // +1 damit wir nicht AUF der Linie schreiben
-    y_min = windows[currentWinIdx].y + 1; // +1 wegen Titelzeile
-    x_max = windows[currentWinIdx].w - 1; // w ist die absolute rechte Kante
-    y_max = windows[currentWinIdx].h - 1;     // h ist die absolute untere Kante
-  }
-
-  // Sicherheitscheck: Falls Cursor außerhalb, reinholen
-  if (x_pos < x_min) x_pos = x_min;
-  if (y_pos < y_min) y_pos = y_min;
-
-  // Carriage Return / Newline
-  if (c == 13) {
-    x_pos = x_min;
-    y_pos++;
-    
-    checkScroll(); // Hier wird jetzt korrekt gescrollt
-    return;
-  }
-  if (c == 10) return;
-
-  // Löschendes Backspace: darf nicht über x_min hinauslöschen
-  if (c == 8 || c == 127) {
-    if (x_pos > x_min) {
-      x_pos--;
-      screenBuffer[y_pos][x_pos] = ' ';
-      colorBuffer_F[y_pos][x_pos] = windows[currentWinIdx].fcolor;
-      colorBuffer_H[y_pos][x_pos] = windows[currentWinIdx].bcolor;
-      vga.drawText(x_pos * 8, y_pos * 8, " ", windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor, false);
-    }
-    return;
-  }
-
-
-  // Zeichen schreiben: Prüfe gegen y_max (unterer Rahmen)
-  if (y_pos <= y_max) {
-    screenBuffer[y_pos][x_pos] = c;
-    colorBuffer_F[y_pos][x_pos] = windows[currentWinIdx].fcolor;
-    colorBuffer_H[y_pos][x_pos] = windows[currentWinIdx].bcolor;
-
-    static char b[2] = {0, 0};
-    b[0] = c;
-    vga.drawText(x_pos * 8, y_pos * 8, b, windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor, false);
-
-    x_pos++;
-  }
-  // Automatischer Zeilenumbruch: Prüfe gegen x_max - 1 (wegen rechtem Rahmen)
-  if (x_pos >= x_max) {
-    x_pos = x_min;
-    y_pos++;
-    checkScroll();
-  }
-
-  drawCursor(cursor_on_off);
-}
-*/
-
-/*
-void redrawScreen() {
-  // 1. Den gesamten Textinhalt und Hintergründe aus dem Buffer wiederherstellen
-  for (int r = 0; r < MAX_R; r++) {
-    for (int c = 0; c < MAX_C; c++) {
-      char ch = screenBuffer[r][c];
-      static char b[2] = {0, 0};
-      b[0] = (ch < 32) ? ' ' : ch;
-
-      uint8_t fg = colorBuffer_F[r][c];
-      uint8_t bg = colorBuffer_H[r][c];
-
-      vga.drawText(c * 8, r * 8, b, fg, bg, false);
-    }
-  }
-
-  // 2. ALLE aktiven Fensterrahmen neu zeichnen
-  // Wir überspringen Index 0 (Vollbild), da es keinen Rahmen hat
-  for (int i = 1; i <= 6; i++) {
-    // Prüfe, ob das Fenster eine gültige Größe hat (einfacher "Aktiv"-Check)
-    if (windows[i].w > 0 && windows[i].h > 0) {
-      drawWindow_BordersOnly(i);
-    }
-  }
-
-  drawCursor(cursor_on_off);
-}
-*/
-
-void checkScroll() {
+void Scroll() {
   int x_min, x_max, y_min, y_max;
   if (currentWinIdx == 0) {
     x_min = 0; y_min = 0; x_max = MAX_C - 1; y_max = MAX_R - 1;
@@ -849,7 +753,6 @@ void checkScroll() {
     y_max = windows[currentWinIdx].h - 2;
   }
 
-  // Puffer schieben: von y_min + 1 nach y_min
   for (int r = y_min + 1; r <= y_max; r++) {
     int count = (x_max - x_min) + 1;
     memcpy(&screenBuffer[r - 1][x_min], &screenBuffer[r][x_min], count);
@@ -857,99 +760,40 @@ void checkScroll() {
     memcpy(&colorBuffer_H[r - 1][x_min], &colorBuffer_H[r][x_min], count);
   }
 
-  // Neue unterste Zeile im Puffer leeren
   for (int c = x_min; c <= x_max; c++) {
     screenBuffer[y_max][c] = ' ';
     colorBuffer_F[y_max][c] = windows[currentWinIdx].fcolor;
     colorBuffer_H[y_max][c] = windows[currentWinIdx].bcolor;
   }
 
-  // VGA Update (nur den Innenraum)
   for (int r = y_min; r <= y_max; r++) {
     for (int c = x_min; c <= x_max; c++) {
       char b[2] = {(char)screenBuffer[r][c], 0};
       vga.drawText(c * 8, r * 8, b, colorBuffer_F[r][c], colorBuffer_H[r][c], false);
     }
   }
-  
+
 }
-
-
-/*
-void checkScroll() {      //Original
-  // 1. Grenzen bestimmen (Bereich innerhalb des Rahmens)
-  int x_min = windows[currentWinIdx].x + 1;
-  int x_max = windows[currentWinIdx].w - 1;
-  int y_min = windows[currentWinIdx].y + 1; // Unter dem Titelbalken
-  int y_max = windows[currentWinIdx].h - 1;
-
-  // Wenn wir im Hauptbildschirm (ID 0) sind, gelten die Standardwerte
-  if (currentWinIdx == 0) {
-    x_min = 0; y_min = 0; x_max = MAX_C - 1; y_max = MAX_R - 1;
-  }
-
-  if (y_pos > y_max) {
-    // 2. Buffer-Inhalt eine Zeile nach oben schieben (nur innerhalb x_min/x_max)
-    for (int r = y_min + 1; r <= y_max; r++) {
-      int count = (x_max - x_min) + 1;
-      memcpy(&screenBuffer[r - 1][x_min], &screenBuffer[r][x_min], count);
-      memcpy(&colorBuffer_F[r - 1][x_min], &colorBuffer_F[r][x_min], count);
-      memcpy(&colorBuffer_H[r - 1][x_min], &colorBuffer_H[r][x_min], count);
-    }
-
-    // 3. Die neue unterste Zeile im Buffer leeren
-    y_pos = y_max;
-    for (int c = x_min; c <= x_max; c++) {
-      screenBuffer[y_pos][c] = ' ';
-      colorBuffer_F[y_pos][c] = windows[currentWinIdx].fcolor;
-      colorBuffer_H[y_pos][c] = windows[currentWinIdx].bcolor;
-    }
-
-    // 4. Effizientes Redraw: Nur den Innenraum des Fensters aktualisieren
-    for (int r = y_min; r <= y_max; r++) {
-      for (int c = x_min; c <= x_max; c++) {
-        static char b[2] = {0, 0};
-        b[0] = screenBuffer[r][c];
-        vga.drawText(c * 8, r * 8, b, colorBuffer_F[r][c], colorBuffer_H[r][c], false);
-      }
-    }
-  }
-}
-*/
-
-
 
 static void line_terminator()
 {
   outchar(13);
-  //outchar(NL);
 }
 
 
 double get_free_ram() {
-  // 1. Hole Statistiken vom Speicher-Manager
   struct mallinfo mi = mallinfo();
-
-  // 2. Berechne den freien Platz im bereits angeforderten Heap-Block
-  // mi.fordblks sind die "Löcher" im Heap (freigegebener Speicher)
-  uint32_t free_in_heap = mi.fordblks;
-
-  // 3. Berechne den noch nicht angeforderten Speicher zwischen Heap und Stack
-  // Auf dem Teensy 4.1 liegt der Heap im 512KB großen RAM2 (OCRAM)
-  uint32_t total_ram2 = 512 * 1024;
+  //uint32_t free_in_heap = mi.fordblks;
+  uint32_t total_ram2 = 512 * 1024;  //HEAP des Teensy im Ram2
   uint32_t used_ram2 = mi.uordblks; // Aktuell belegter Heap
-
   // Gesamter freier Platz im System-RAM
   double total_free = (double)(total_ram2 - used_ram2);
-
   return total_free;
 }
 
 
 void parseVarName() {
-
   spaces();
-
   if (*txtpos >= 'A' && *txtpos <= 'Z') {                                               // 1. Zeichen (Muss A-Z sein)
     vIdx1 = *txtpos++ - 'A';
   } else {
@@ -961,7 +805,7 @@ void parseVarName() {
   } else if (*txtpos >= '0' && *txtpos <= '9') {
     vIdx2 = (*txtpos++ - '0') + 27;                                                     // Index 27 bis 36
   } else {
-    vIdx2 = 0; // Kein zweites Zeichen
+    vIdx2 = 0;
   }
 }
 
@@ -971,33 +815,51 @@ int getVIdx2(char c) {
   return 0;                                       // Kein Folgezeichen
 }
 
-// Hilfsfunktion: Sucht ein Wort in einer Liste und verschiebt txtpos nur bei Erfolg
-int scanKeyword(Keyword* list) {
+int scanKeyword(Keyword* list, int tableSize) {
   spaces();
-  for (int i = 0; list[i].name != NULL; i++) {
-    int len = strlen(list[i].name);
-    if (strncmp(txtpos, list[i].name, len) == 0) {
-      // Wichtig: Sicherstellen, dass kein Buchstabe folgt (z.B. "PRINTX" vs "PRINT")
-      if (!isalnum(txtpos[len]) && txtpos[len] != '$') {
-        txtpos += len;
-        return list[i].token;
-      }
-    }
+  const char* startPos = txtpos; // Die echte Startposition merken
+  const char* tempPos = txtpos;  // tempPos zum "Vorschauen" nutzen
+
+  char buffer[32];
+  int i = 0;
+
+  while (isalnum(*tempPos) || *tempPos == '$') {
+    buffer[i++] = toupper(*tempPos++);
+    if (i >= 31) break;
   }
-  return -1; // Nichts gefunden
+  buffer[i] = '\0';
+
+  if (i == 0) {
+    txtpos = startPos;
+    return -1;
+  }
+
+  // 2. Binäre Suche
+  int left = 0;
+  int right = tableSize - 1;
+  while (left <= right) {
+    int mid = left + (right - left) / 2;
+    int res = strcmp(buffer, list[mid].name);
+
+    if (res == 0) {
+      txtpos = tempPos;
+      return list[mid].token;
+    }
+    if (res > 0) left = mid + 1;
+    else right = mid - 1;
+  }
+  txtpos = startPos;                                  //txtpos zurücksetzen
+  return -1;
 }
+//############################################### finde Befehls-Token ####################################################################
 
-
-
-// 1. Für den Zeilenanfang (Interpreter-Hauptschleife)
 int getCommandToken() {
 
   spaces();
-  int t = scanKeyword(commands);
-
+  int t = scanKeyword(commands, numCommands);
+  //print(txtpos);
   if (t != -1) return t;
 
-  // In getCommandToken oder der Variable
   if (isalpha(*txtpos)) {
     lastVarName = *txtpos;
     isStringVar = false;
@@ -1009,7 +871,9 @@ int getCommandToken() {
       vIdx2 = getVIdx2(*txtpos);
       txtpos++;
     }
-
+    while (isalnum(*txtpos)) {
+      txtpos++;
+    }
     //$ für Strings überspringen!
     if (*txtpos == '$') {
       isStringVar = true;
@@ -1020,6 +884,7 @@ int getCommandToken() {
 
   return TOKEN_ERROR;
 }
+//###################################################### finde Funktions-Token ###############################################################
 
 int getFunctionToken() {
   //isStringVar = false;
@@ -1028,7 +893,7 @@ int getFunctionToken() {
   if (*txtpos == '\0') return TOKEN_END;
 
   // Funktionen prüfen (SQR SIN etc.)
-  int t = scanKeyword(functions);
+  int t = scanKeyword(functions, numFunctions);
   if (t != -1) return t;
 
   // Zahlen prüfen
@@ -1049,7 +914,7 @@ int getFunctionToken() {
       lastStringValue[len++] = *txtpos++;
     }
     lastStringValue[len] = '\0'; // Null-Terminator für den C-String
-
+    if (*txtpos == '"') txtpos++;
     return TOKEN_STRING_LITERAL;
   }
 
@@ -1060,8 +925,11 @@ int getFunctionToken() {
     vIdx2 = 0;
     txtpos++;
 
-    if (isalpha(*txtpos) || isdigit(*txtpos)) {
+    if (isalnum(*txtpos) || isdigit(*txtpos)) {
       vIdx2 = getVIdx2(*txtpos);
+      txtpos++;
+    }
+    while (isalnum(*txtpos)) {
       txtpos++;
     }
     if (*txtpos == '$') {
@@ -1073,12 +941,10 @@ int getFunctionToken() {
 
   return TOKEN_ERROR;
 }
+//############################################################ getln ####################################################################
 
 void getln(int showReady) {
-  if (showReady) {
-    if (x_pos != 0) outchar(13);
-    printmsg("READY.", true);
-  }
+  if (showReady) printReady();
 
   int cursor = 0;
   int length = 0;
@@ -1095,6 +961,7 @@ void getln(int showReady) {
 
   }
 }
+//############################################################ Inchar ####################################################################
 
 static int inchar() {
   uint32_t lastBlink = 0;
@@ -1119,27 +986,42 @@ static int inchar() {
     yield();
   }
 }
-
+//############################################# Anzeige Syntaxerror mit Position #######################################################
 
 static void syntaxerror(const char *msg)
 {
-  printmsg(msg, 1);
-  /*
-    if (current_line != NULL)
-    {
-    char tmp = *txtpos;           //Position merken
-    if (*txtpos != '\0') *txtpos = '^';
-    list_line = current_line;
-    print(txtpos);
-    //printColoredLine(txtpos);
-     txtpos = tmp;                //gemerkte Position zurückschreiben
+  if (isError == true) return;
+
+  char* lineStart = program[currentLineIndex].text;
+  if (isRunning) {
+    if (lineStart != NULL) {
+
+      print(program[currentLineIndex].number);                                    // Ausgabe der Zeilennummer
+      print(" ");
+      println(lineStart);
+      int offset = txtpos - lineStart;                                            // Versatz berechnen: Aktuelle Position minus Startposition im Text
+
+      int numDigits = 0;
+      int tempNum = program[currentLineIndex].number;
+      while (tempNum > 0) {
+        tempNum /= 10;
+        numDigits++;
+      }
+      if (program[currentLineIndex].number == 0) numDigits = 1;
+
+      for (int i = 0; i < (numDigits + 1 + offset); i++) {                        // Einrücken: Nummer-Stellen + 1 (für das Leerzeichen nach der Nummer)
+        print(" ");
+      }
+      println("^");                                                               // Markierung unter dem falschen Zeichen
     }
-  */
-  //Beep(0, 0);                     //Error-BEEP
-  current_line = 0;
+  }
+  printmsg(msg, 0);
+  currentLineIndex = 0;
   line_terminator();
   isRunning = false;
+  isError = true;
 }
+//############################################################ Meldung ausgeben ###########################################################
 
 void printmsg(const char *msg, int nl) {
 
@@ -1152,6 +1034,7 @@ void printmsg(const char *msg, int nl) {
   }
 }
 
+//############################################################ Zeile speichern ###########################################################
 
 void storeLine(int num, char* code) {
   int i, j;
@@ -1190,47 +1073,47 @@ void storeLine(int num, char* code) {
     syntaxerror(outofmemory);
   }
 }
-//############################################################ waitkey ######################################################################
+//############################################################ wait_key ###################################################################
 
-int waitkey() {
-  outchar(13);
-  println("< Continue = Space/Enter, Break = ESC >");
+static uint16_t wait_key(bool modes) {
+  if (modes) {
+    line_terminator();
+    printmsg("SPACE<Continue> / ESC <Exit>", 1);
+  }
   while (1) {
+    // 1. Terminal-Check
     if (lastUsbChar != -1) {
       int c = lastUsbChar;
       lastUsbChar = -1;
-      if (c == 27) return 1;
-      if (c == 32 || c == 13) break;
+      return (uint16_t)c;
     }
+    yield();
   }
-  return 0;
 }
 
-
-//################################################################# Syntax-Hervorhebung - muss noch angepasst werden #######################################################################################
-
+//################################################################# Syntax-Hervorhebung ###################################################
 void printColoredLine(char* lineText) {
   char* old_txtpos = txtpos;
   bool fornext = false;
   txtpos = lineText;
 
   if (strstr(lineText, "NEXT") || strstr(lineText, "WEND")) {
-    if(strstr(lineText, "FOR")){
-      fornext=true;
+    if (strstr(lineText, "FOR")) {
+      fornext = true;
     }
-    else{
-    currentIndent--;
-    if (currentIndent < 0) currentIndent = 0;
+    else {
+      currentIndent--;
+      if (currentIndent < 0) currentIndent = 0;
     }
   }
 
   for (int i = 0; i < currentIndent; i++) print(" ");
-
+  spaces();
   while (*txtpos) {
     if (*txtpos == ' ') {
       print(*txtpos++);
       continue;
-      }
+    }
 
     char* startOfToken = txtpos;
 
@@ -1264,7 +1147,7 @@ void printColoredLine(char* lineText) {
           print(*startOfToken++);
         }
         if (*startOfToken == '"') print(*startOfToken++);       // Falls ein schließendes " da ist, auch dieses drucken
-        txtpos = startOfToken; 
+        txtpos = startOfToken;
         fbcolor(WHITE, 0);
         continue;
       }
@@ -1302,7 +1185,6 @@ void cmd_list() {
   currentIndent = 0;
   int tmp_color = windows[currentWinIdx].bcolor;          //aktuelle Hintergrundfarbe sichern
   fbcolor(0, 1);                                          //Hintergrund für die Listausgabe in Schwarz
-  //cmd_cls();                                            //vorher Bildschirm löschen ?, reine Geschmackssache
 
   int zeilen = 0;
   if (lineCount == 0) {
@@ -1327,7 +1209,7 @@ void cmd_list() {
       fbcolor(WHITE, 0);
       zeilen++;
       if (zeilen == MAX_R - 10) {
-        if (waitkey()) return;
+        if (wait_key(1) == 27) return;
         zeilen = 0;
       }
     }
@@ -1408,7 +1290,7 @@ double func_fn() {
   double result = expression();
 
   // 4. WIEDERHERSTELLUNG
-  
+
   for (int i = 0; i < function[idx].paramCount; i++) {
     int varIdx = function[idx].params[i] - 'A';
     variables[varIdx][0] = oldParamValues[i];
@@ -1458,14 +1340,14 @@ double factor() {
     if (!isalnum(*p) && *p != '$' && *p != '(') {
       int v1 = *txtpos - 'A';
       txtpos = p;
-      return variables[v1][0]; 
+      return variables[v1][0];
     }
   }
 
   // --- NEU: Logisches NOT mit '!' ---
   if (*txtpos == '!') {
-    txtpos++; 
-    double val = factor(); 
+    txtpos++;
+    double val = factor();
     return (val == 0) ? 1.0 : 0.0;
   }
   // --- NEU: Präfix-Erkennung für Hex, Bin und Oct ---
@@ -1539,7 +1421,7 @@ double factor() {
         return (double)inkey();
 
       case TOKEN_MAP: {
-          if (Test_char('(')) return 0; 
+          if (Test_char('(')) return 0;
           double val    = expression(); // Wert, der skaliert werden soll
           if (Test_char(',')) return 0;
           double inMin  = expression(); // Quell-Untergrenze
@@ -1549,7 +1431,7 @@ double factor() {
           double outMin = expression(); // Ziel-Untergrenze
           if (Test_char(',')) return 0;
           double outMax = expression(); // Ziel-Obergrenze
-          if (Test_char(')')) return 0; 
+          if (Test_char(')')) return 0;
 
           return mapDouble(val, inMin, inMax, outMin, outMax);
         }
@@ -1602,7 +1484,7 @@ double factor() {
           if (*txtpos == '(') txtpos++;
 
           double result = 0;
-          int t = getFunctionToken(); 
+          int t = getFunctionToken();
 
           if (t == TOKEN_VARIABLE && isStringVar) {
             result = (double)stringVars[vIdx1][vIdx2].length();
@@ -1619,15 +1501,15 @@ double factor() {
       case TOKEN_ASC: {
           spaces();
           if (*txtpos == '(') {
-            txtpos++; 
+            txtpos++;
             String s = parseStringExpression();
             spaces();
-            if (*txtpos == ')') txtpos++;                   
+            if (*txtpos == ')') txtpos++;
             if (s.length() > 0) {
               return (double)((uint8_t)s[0]);           // ASCII-Wert des ersten Zeichens
             }
           }
-          return 0; 
+          return 0;
         }
       case TOKEN_FRE: {
           // FRE(x) 1-usedlines 2-freelines 3-totalRam 4-usedRam 5-freeBytes
@@ -1706,6 +1588,10 @@ double factor() {
       vIdx2 = getVIdx2(*txtpos);
       txtpos++;
     }
+    while (isalnum(*txtpos)) {                                   //lange Variablennamen
+      txtpos++;
+    }
+
     if (*txtpos == '$') {
       isStringVar = true;
       txtpos++;
@@ -1723,7 +1609,7 @@ double power() {                                    //untere Ebene Power
     spaces();
     if (*txtpos == '^') {
       txtpos++;
-      val = pow(val, power());              
+      val = pow(val, power());
     } else {
       return val;
     }
@@ -1780,18 +1666,18 @@ double expression() {                             //Oberste Ebene: Addition und 
 bool relation() {
   spaces();
   double left = expression();
-  
+
   if (*txtpos == '<' || *txtpos == '>' || *txtpos == '=') {
-    
+
     char op1 = *txtpos++;
     char op2 = '\0';
-    
+
     if (*txtpos == '=' || *txtpos == '>') {
       op2 = *txtpos++;
     }
-    
+
     double right = expression();
-    
+
     if (op1 == '=') return left == right;
     if (op1 == '<') {
       if (op2 == '>') return left != right;
@@ -1807,7 +1693,7 @@ bool relation() {
 }
 
 bool logical_expression() {
-  bool result = logical_and(); 
+  bool result = logical_and();
 
   while (true) {
     spaces();
@@ -1819,7 +1705,7 @@ bool logical_expression() {
       result = result || or_res;
     }
     else {
-      txtpos = beforeToken; 
+      txtpos = beforeToken;
       return result;
     }
   }
@@ -1827,7 +1713,7 @@ bool logical_expression() {
 
 
 bool logical_and() {                            // Verarbeitet AND (höhere Priorität)
-  bool result = relation(); 
+  bool result = relation();
 
   while (true) {
     spaces();
@@ -1926,19 +1812,22 @@ void doVars() {
 void cmd_print() {
   bool newline = true;
   int tmp_win = currentWinIdx;
+  String usingFormat = "";
+  bool useUsing = false;
 
   while (*txtpos != '\0' && *txtpos != ':' && *txtpos != '\r' && *txtpos != '\n') {
     spaces();
-    printMode = 0; // Vor jedem Element zurücksetzen!
+    printMode = 0;
 
-    // --- AT(x,y) CHECK ---
-    if (strncmp(txtpos, "AT", 2) == 0) {
-      if (currentWinIdx > 0) {                                            //PRINT AT wirkt auf den Hauptbildschirm
+    // 1. Keywords scannen (AT, TAB, USING sind in deiner commands-Tabelle)
+    int t = scanKeyword(commands, numCommands);
+
+    if (t == TOKEN_AT) {
+      if (currentWinIdx > 0) {
         windows[currentWinIdx].curX = x_pos;
         windows[currentWinIdx].curY = y_pos;
         currentWinIdx = 0;
       }
-      txtpos += 2;
       spaces();
       if (*txtpos == '(') {
         txtpos++;
@@ -1951,83 +1840,87 @@ void cmd_print() {
         if (newY >= 0 && newY < MAX_R) y_pos = newY;
 
         newline = false;
-        spaces();
         if (*txtpos == ';') txtpos++;
       }
-
-      continue; // Nächstes Element in PRINT bearbeiten
+      continue;
     }
-    //--- TAB(x) CHECK ---
-    if (strncmp(txtpos, "TAB", 3) == 0) {
-      txtpos += 3;
+
+    if (t == TOKEN_TAB) {
       spaces();
       if (*txtpos == '(') {
         txtpos++;
-        int newX = expression();
+        int newX = (int)expression();
         if (*txtpos == ')') txtpos++;
         if (newX >= 0 && newX < MAX_C) x_pos = newX;
-
         newline = false;
-        spaces();
         if (*txtpos == ';') txtpos++;
       }
-      continue; // Nächstes Element in PRINT bearbeiten
+      continue;
     }
 
-    // --- 1. STRING-CHECK ---
-    bool isString = (*txtpos == '"');
-    if (!isString && isalpha(*txtpos)) {
-      if (strncmp(txtpos, "LEFT$", 5) == 0 || strncmp(txtpos, "MID$", 4) == 0 ||
-          strncmp(txtpos, "RIGHT$", 6) == 0 || strncmp(txtpos, "STR$", 4) == 0 ||
-          strncmp(txtpos, "SPC", 3) == 0 || strncmp(txtpos, "TIME$", 5) == 0 ||
-          strncmp(txtpos, "DATES$", 6) == 0 ) {
-        isString = true;
-      } else {
-        const char* p = txtpos;
-        while (isalnum(*p)) p++;
-        if (*p == '$') isString = true;
-      }
+    if (t == TOKEN_USING) {
+      spaces();
+      usingFormat = parseStringExpression();
+      useUsing = true;
+      spaces();
+      if (*txtpos == ';' || *txtpos == ',') txtpos++;
+      continue;
     }
+
+    // --- 2. STRING ODER NUMERISCH ---
+    // Wir schauen, ob als Nächstes ein String kommt (Literal, Variable oder Funktion)
+    const char* checkpoint = txtpos;
+    int ft = getFunctionToken();
+
+    // Prüfen, ob das Token ein String-Typ ist
+    bool isString = (ft == TOKEN_STRING_LITERAL) ||
+                    (ft == TOKEN_VARIABLE && isStringVar) || ft == TOKEN_STRING ||
+                    (ft == TOKEN_LEFT || ft == TOKEN_MID || ft == TOKEN_RIGHT || ft == TOKEN_SPC ||
+                     ft == TOKEN_STR || ft == TOKEN_CHR || ft == TOKEN_TIME || ft == TOKEN_DATE);
+
+    txtpos = checkpoint; // Zurücksetzen, damit parseStringExpression oder expression() von vorne lesen
+
     if (isString) {
       print(parseStringExpression());
       newline = true;
-
-    }
-    // --- 2. NUMERISCHE AUSDRÜCKE (inkl. HEX/BIN/OCT) ---
-    else {
+    } else {                          // --- 2. NUMERISCHE AUSDRÜCKE (inkl. HEX/BIN/OCT) ---
       double val = expression();
 
-      // Prüfen, ob eine Spezialfunktion das printMode-Flag gesetzt hat
       if (printMode == 16) {
         print("H");
         print((double)val, HEX);
       }
-      else if (printMode == 2)  {
+      else if (printMode == 2) {
         print("B");
         print((double)val, BIN);
       }
-      else if (printMode == 8)  {
+      else if (printMode == 8) {
         print("O");
         print((double)val, OCT);
       }
       else {
-        // Normaler numerischer Print
-        if (val == (long)val && val < 2147483647 && val > -2147483648) {
-          print((long)val);
-        }
-        // 2. Alles andere (Groß, Klein oder Fließkomma)
-        else {
+        if (useUsing) {
+          int dotPos = usingFormat.indexOf('.');
+          int totalWidth = (dotPos == -1) ? usingFormat.length() : dotPos;
+          int precision = (dotPos == -1) ? 0 : usingFormat.length() - dotPos - 1;
           char buf[32];
-          // %g ist die sicherste Wahl für double auf dem Teensy
-          // Es wechselt automatisch zu 1.23E+38, wenn die Zahl zu groß wird
-          snprintf(buf, sizeof(buf), "%.10g", val);
+          String fmt = "%" + String(totalWidth + (precision > 0 ? precision + 1 : 0)) + "." + String(precision) + "f";
+          snprintf(buf, sizeof(buf), fmt.c_str(), val);
           print(buf);
+        } else {
+          if (val == (long)val && val < 2147483647 && val > -2147483648) {
+            print((long)val);
+          } else {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.10g", val);
+            print(buf);
+          }
         }
       }
       newline = true;
     }
 
-    // --- 3. TRENNER-LOGIK ---
+    // --- 3. TRENNER ---
     spaces();
     if (*txtpos == ';') {
       txtpos++;
@@ -2041,10 +1934,10 @@ void cmd_print() {
     else break;
   }
 
+  useUsing = false;
   if (newline) println();
-  currentWinIdx = tmp_win;                                        //wieder zum ursprünglichen Fenster zurück
+  currentWinIdx = tmp_win;
 }
-
 
 //############################################################ CLEAR ######################################################################
 
@@ -2058,20 +1951,30 @@ void clearAll() {
   }
   for (int i = 0; i < arrayCount; i++) {
     if (allArrays[i].isString) {
-      delete[] allArrays[i].strData;
+      if (allArrays[i].strData != nullptr) {
+        delete[] allArrays[i].strData;
+        allArrays[i].strData = nullptr;
+      }
     } else {
-      free(allArrays[i].numData);
+      if (allArrays[i].numData != nullptr) {
+        delete[] allArrays[i].numData;
+        allArrays[i].numData = nullptr;
+      }
     }
+    // Dimensionen zurücksetzen
+    allArrays[i].dimX = 0;
+    allArrays[i].dimY = 0;
+    allArrays[i].dimZ = 0;
   }
-
+  arrayCount = 0;                                                                      //Array-Zähler
   gosubStackPtr = 0;                                                                   // GOSUB Stack leeren
-  arrayCount = 0;
   forStackPtr = 0;                                                                     // FOR-NEXT Verschachtelung löschen
   currentLineIndex = 0;                                                                // Zeiger auf die erste Programmzeile
   dataLineIdx = 0;
   dataPtr = NULL;
   isRunning = true;                                                                    // Ausführungs-Flag setzen
-  jumped = false;                                                                       // WICHTIG: Signalisiert der Hauptschleife einen Neustart
+  jumped = false;                                                                      // WICHTIG: Signalisiert der Hauptschleife einen Neustart
+  isError = false;
   resetWindows();
 
 }
@@ -2233,7 +2136,7 @@ void cmd_read() {
     if (*txtpos == '(') {
       txtpos++; // '(' überspringen
       int x = (int)expression(); if (*txtpos == ',') txtpos++;
-      int y = (int)expression(); 
+      int y = (int)expression();
       if (*txtpos == ',') txtpos++;
       int z = (int)expression(); if (*txtpos == ')') txtpos++;
 
@@ -2243,7 +2146,7 @@ void cmd_read() {
         if (isStr) allArrays[i].strData[idx] = sVal;
         else allArrays[i].numData[idx] = val;
       } else {
-        syntaxerror(' '); printmsg(dimmsg, 0);
+        syntaxerror(dimmsg);
         isRunning = false; return;
       }
     } else {
@@ -2331,8 +2234,8 @@ String parseStringExpression() {
     if (*txtpos == '"') txtpos++;
   }
   else {
-    // Nutze scanKeyword, um Funktionen wie LEFT$, MID$, etc. zu finden
-    int t = scanKeyword(functions);
+    const char* checkpoint = txtpos; // Position sichern
+    int t = scanKeyword(functions, numFunctions);
 
     switch (t) {
       case TOKEN_SPC: {
@@ -2352,6 +2255,11 @@ String parseStringExpression() {
           if (*txtpos == '(') {
             txtpos++;
             String s = parseStringExpression();
+            // SICHERHEIT: Falls der erste Parameter kein String war
+            if (s == "" && *txtpos != '"' && !isalpha(*txtpos)) {
+              syntaxerror(valmsg);
+              return "";
+            }
             int p1 = 0, p2 = -1; // p1 = start/n, p2 = len
             if (*txtpos == ',') {
               txtpos++;
@@ -2430,6 +2338,10 @@ String parseStringExpression() {
             vIdx2 = getVIdx2(*txtpos);
             txtpos++;
           }
+          while (isalnum(*txtpos)) {                                   //lange Variablennamen
+            txtpos++;
+          }
+
           if (*txtpos == '$') {
             txtpos++;
             if (*txtpos == '(') res = get_string_array_value();
@@ -2516,13 +2428,11 @@ void cmd_gosub() {
     int targetNum = (int)lastNumberValue;
 
     if (gosubStackPtr < MAX_GOSUB_STACK) {
-      // Rücksprungpunkt speichern:
-      // Wir speichern die aktuelle Zeile und die Position NACH der GOTO-Nummer
+
       gosubStack[gosubStackPtr].lineIndex = currentLineIndex;
       gosubStack[gosubStackPtr].txtPos = txtpos;
       gosubStackPtr++;
 
-      // Den Sprung ausführen (nutzt deine existierende jumpTo Logik)
       if (jumpTo(targetNum)) {
         txtpos = program[currentLineIndex].text;
         jumped = true; // Wichtig für den Haupt-Loop!
@@ -2561,13 +2471,11 @@ void cmd_return() {
 
 
 //############################################################ DIR/FILES ######################################################################
-
 void cmd_files() {
   int zeilen = 0;
   spaces();
   bool tmp_cur = cursor_on_off;
   cursor_on_off = false;
-  //drawCursor(cursor_on_off);
 
   String filter = "";
   if (*txtpos == '"' || isalpha(*txtpos)) {
@@ -2580,17 +2488,15 @@ void cmd_files() {
     syntaxerror(sderrormsg);
     return;
   }
-
-  // Zähler für die Statistik
   int fileCount = 0;
   uint64_t totalFilesSize = 0;
 
-  print("Files on SD-Card");
+  println("Files on SD-Card:");
   if (filter != "") {
-    print(" (Filter: *"); print(filter); print("*)");
+    print(" (Filter: *"); print(filter); println("*)");
   }
-  println(":");
   println("----------------------------------------");
+
   while (true) {
     File entry = root.openNextFile();
     if (!entry) break;
@@ -2598,50 +2504,53 @@ void cmd_files() {
     String fileName = String(entry.name());
     String fileNameUpper = fileName;
     fileNameUpper.toUpperCase();
-    // int f = check_extension(fileNameUpper);
+
     if (filter == "" || fileNameUpper.indexOf(filter) != -1) {
       fileCount++;
       totalFilesSize += entry.size();
-      x_pos = 1;
-      fbcolor(YELLOW, 0);
+
+      // 1. DATEINAME (Spalte 1, Breite z.B. 15 Zeichen)
+      print(" ");
       if (fileNameUpper.indexOf(".BAS") != -1) fbcolor(CYAN, 0);
       else if (fileNameUpper.indexOf(".BIN") != -1) fbcolor(GREEN, 0);
-      else if (fileNameUpper.indexOf(".BMP") != -1) fbcolor(RED, 0);
+      else if (fileNameUpper.indexOf(".BMP") != -1 || fileNameUpper.indexOf(".JPG") != -1) fbcolor(RED, 0);
+      else if (entry.isDirectory()) fbcolor(YELLOW, 0);
+
       print(fileName);
+      if (entry.isDirectory()) print("/");
+
+      // Auffüllen bis Spalte 16
+      int pad = 20 - fileName.length() - (entry.isDirectory() ? 1 : 0);
+      for (int i = 0; i < pad; i++) print(" ");
+
       fbcolor(WHITE, 0);
+
+      // 2. GRÖSSE (Spalte 2, Breite 10 Zeichen)
       if (entry.isDirectory()) {
         fbcolor(YELLOW, 0);
-        print("/");
-        x_pos = 21;
-        println("< dir >");
-        zeilen++;
-        entry.close();
-        continue;
+        print("<DIR>     ");
+        fbcolor(WHITE, 0);
       } else {
-        x_pos = 20;                                     //horizontale Ausgabeposition festlegen
-        print(entry.size());
-
-
+        String sSize = String((unsigned long)entry.size());
+        print(sSize);
+        for (int i = 0; i < (10 - sSize.length()); i++) print(" ");
       }
-      // 2. Datum und Zeit am Ende der Zeile
 
-      x_pos = 29;
-      // 2. Datum und Zeit am Ende der Zeile
+      // 3. DATUM (Spalte 3)
       DateTimeFields tm;
-      if (entry.getModifyTime(tm)) { // Übergabe der Struktur statt Pointer
-        int year = tm.year + 1900;
-        int month = tm.mon + 1;
-        int day = tm.mday;
-        int hour = tm.hour;
-        int minute = tm.min;
-        if (day < 10) print("0"); print(day); print(".");
-        if (month < 10) print("0"); print(month); print(".");
-        println(year);
+      if (entry.getModifyTime(tm)) {
+        if (tm.mday < 10) print("0"); print(tm.mday); print(".");
+        if (tm.mon + 1 < 10) print("0"); print(tm.mon + 1); print(".");
+        print(tm.year + 1900);
       }
+      println();
 
       zeilen++;
-      if (zeilen == MAX_R - 10) {
-        if (waitkey()) {
+
+      int limit = (currentWinIdx == 0) ? MAX_R - 10 : windows[currentWinIdx].h - 4;       // Paging angepasst an Fensterhöhe
+      if (zeilen >= limit) {
+        print("-- Press Key --");
+        if (wait_key(1) == 27) {
           entry.close();
           break;
         }
@@ -2649,26 +2558,16 @@ void cmd_files() {
       }
     }
     entry.close();
-
   }
   root.close();
 
-  // --- Kapazitätsberechnung ---
-  // SD.totalSize() und SD.usedSize() geben Bytes als uint64_t zurück
-  uint64_t totalCardBytes = SD.totalSize();
-  uint64_t usedCardBytes = SD.usedSize();
-  uint64_t freeCardBytes = totalCardBytes - usedCardBytes;
-
   println("----------------------------------------");
   print(fileCount); println(" Files found.");
-
-  print("Used memory:    ");
-  printSmartSize(usedCardBytes);
-  print("Free memory:    ");
-  printSmartSize(freeCardBytes);
-  print("Total capacity: ");
-  printSmartSize(totalCardBytes);
-
+  println();
+  // Statistik
+  print("Used : "); printSmartSize(SD.usedSize());
+  print("Free : "); printSmartSize(SD.totalSize() - SD.usedSize());
+  print("Total: "); printSmartSize(SD.totalSize());
   cursor_on_off = tmp_cur;
   drawCursor(cursor_on_off);
 }
@@ -2783,7 +2682,6 @@ void cmd_load() {
 }
 
 //############################################################ SAVE ######################################################################
-
 void cmd_save() {
   spaces();
   String fileNameStr = parseStringExpression();
@@ -2795,12 +2693,22 @@ void cmd_save() {
 
   const char* fileName = fileNameStr.c_str();
 
-  // 2. Falls Datei schon existiert, löschen (Überschreiben)
+  // --- Überschreiben Abfrage mit waitkey ---
   if (SD.exists(fileName)) {
-    SD.remove(fileName);
+    print("File exists. Overwrite? (y/n): ");
+
+    char choice = tolower(wait_key(0));
+    println(String(choice));
+
+    if (choice != 'y') {
+      println("Save aborted.");
+      return;
+    }
+
+    SD.remove(fileName);                                      // Wenn 'y', löschen wir die alte Datei vor dem Neuschreiben
   }
 
-  // 3. Datei zum Schreiben öffnen
+  // Ab hier wie gehabt: Datei öffnen und speichern
   File file = SD.open(fileName, FILE_WRITE);
   if (!file) {
     print("ERROR: Could not create ");
@@ -2811,13 +2719,11 @@ void cmd_save() {
   print("Saving to ");
   println(fileName);
 
-  // 4. Zeile für Zeile speichern
   for (int j = 0; j < lineCount; j++) {
     file.print(program[j].number);
     file.print(" ");
     file.println(program[j].text);
   }
-
   file.close();
 }
 
@@ -2949,8 +2855,7 @@ String get_string_array_value() {
 }
 
 double get_array_value_factor() {
-  // Wir nutzen die globalen Indizes vIdx1 und vIdx2, die der Parser
-  // gerade in factor() oder getCommandToken() ermittelt hat.
+
   int v1 = vIdx1;
   int v2 = vIdx2;
   //println(isStringVar);
@@ -3034,6 +2939,10 @@ void cmd_dim() {
       txtpos++;
     }
 
+    while (isalnum(*txtpos)) {                                   //lange Variablennamen
+      txtpos++;
+    }
+
     int id1 = vIdx1;        //Variablen-Index sichern, da expression() sie verändert
     int id2 = vIdx2;
 
@@ -3064,15 +2973,22 @@ void cmd_dim() {
     if (*txtpos == ')') {
       txtpos++;
     } else {
-      isRunning = false; return;
+      isRunning = false;
+      return;
     }
 
     // 3. Array im Speicher anlegen
     int sizeX = d1 + 1;
-    int sizeY = d2 + 1;
-    int sizeZ = d3 + 1;
-    int totalSize = sizeX * sizeY * sizeZ;
+    int sizeY = (d2 == 0) ? 1 : d2 + 1;
+    int sizeZ = (d3 == 0) ? 1 : d3 + 1;
 
+    long long totalSize = (long long)sizeX * sizeY * sizeZ;
+    const long long MAX_ELEMENTS = 10000;
+
+    if (totalSize > MAX_ELEMENTS) {
+      syntaxerror(outofmemory);
+      isRunning = false; return;
+    }
     if (arrayCount < MAX_ARRAYS) {
       allArrays[arrayCount].vIdx1 = id1;
       allArrays[arrayCount].vIdx2 = id2;
@@ -3082,9 +2998,15 @@ void cmd_dim() {
       allArrays[arrayCount].dimZ = sizeZ;
 
       if (sVar) {
-        allArrays[arrayCount].strData = new String[totalSize];
+        allArrays[arrayCount].strData = new (std::nothrow) String[totalSize];
+        if (allArrays[arrayCount].strData == nullptr) {
+          syntaxerror(outofmemory); isRunning = false; return;
+        }
       } else {
-        allArrays[arrayCount].numData = (double*)malloc(totalSize * sizeof(double));
+        allArrays[arrayCount].numData = new (std::nothrow) double[totalSize];
+        if (allArrays[arrayCount].numData == nullptr) {
+          syntaxerror(outofmemory); isRunning = false; return;
+        }
         for (int i = 0; i < totalSize; i++) allArrays[arrayCount].numData[i] = 0.0;
       }
       arrayCount++;
@@ -3098,15 +3020,16 @@ void cmd_dim() {
 
 
 void cmd_assignment() {
-  // Wir nutzen die vom Parser (getCommandToken) gesetzten Indizes
+
   int targetV1 = vIdx1;
   int targetV2 = vIdx2;
   bool sVar = isStringVar;
 
+  //print(*txtpos);
   // Schneller Check: Ist es eine einfache Zuweisung?
   if (*txtpos == '=') {
     txtpos++;
-    if (isStringVar) {
+    if (sVar) {
       stringVars[targetV1][targetV2] = parseStringExpression();
     } else {
       variables[targetV1][targetV2] = expression();
@@ -3182,7 +3105,7 @@ void cmd_assignment() {
 void skip_to_else() {
   while (*txtpos != '\0' && *txtpos != ':') {
     const char* savedPos = txtpos;
-    int t = scanKeyword(commands);
+    int t = scanKeyword(commands, 61);
 
     if (t == TOKEN_ELSE) return;                                // ELSE gefunden dann zurück
     txtpos = savedPos + 1;                                      // Falls es kein ELSE war, nur ein Zeichen weitergehen und weitersuchen
@@ -3206,28 +3129,25 @@ void skip_to_wend() {
     }
 
     const char* pBefore = txtpos;
-    int t = scanKeyword(commands);
+    int t = scanKeyword(commands, numCommands);
 
     if (t == TOKEN_WHILE) {
-      nesting++; // Innere Schleife gefunden
+      nesting++;                                // Innere Schleife gefunden
     }
     else if (t == TOKEN_WEND) {
-      nesting--; // Ende einer Schleife gefunden
-      if (nesting == 0) {
-        // Das passende WEND zur ursprünglichen WHILE-Schleife gefunden
+      nesting--;                                // Ende einer Schleife gefunden
+      if (nesting == 0) {                       // Das passende WEND zur ursprünglichen WHILE-Schleife gefunden
+
         spaces();
         return;
       }
     }
 
-    // Wenn kein Keyword erkannt wurde oder wir noch tiefer verschachtelt sind
-    if (pBefore == txtpos) {
+    if (pBefore == txtpos) {                    // Wenn kein Keyword erkannt wurde oder wir noch tiefer verschachtelt sind
       txtpos++;
     }
   }
-
-  // Fehlerfall: WEND wurde nie gefunden
-  isRunning = false;
+  isRunning = false;                            // Fehlerfall: kein WEND gefunden
   println("Error: WHILE without WEND");
 }
 
@@ -3244,7 +3164,7 @@ void skip_to(int target1, int target2) {
     }
 
     const char* pBefore = txtpos;
-    int t = scanKeyword(commands);
+    int t = scanKeyword(commands, numCommands);
 
     if (t == TOKEN_WHILE) {
       nesting++;
@@ -3327,8 +3247,6 @@ void cmd_dwrite() {
   if (*txtpos == ',') {
     txtpos++;
     int state = (int)expression(); // Status (0 = LOW, 1 = HIGH)
-
-    // Teensy Hardware-Befehl
     pinMode(pin, OUTPUT);
     digitalWrite(pin, state);
 
@@ -3406,8 +3324,6 @@ void cmd_mem() {
 
 static int Test_char(char az)
 {
-  // check for char az
-
   if (*txtpos != az)
   {
     return 1;
@@ -3465,7 +3381,7 @@ void hexMonitor(uint8_t* startAddr) {
     zeilen++;
 
     if (zeilen == MAX_R - 10) { // 2. Check gegen 20
-      if (waitkey()) break; // Falls waitkey true (z.B. ESC), beenden
+      if (wait_key(1) == 27) break; // Falls waitkey true (z.B. ESC), beenden
       zeilen = 0; // 3. NUR HIER zurücksetzen!
     }
   }
@@ -3522,16 +3438,12 @@ void cmd_defn() {
     }
     if (*txtpos == ')') txtpos++;
   }
-
   spaces();
   if (*txtpos == '=') {
     txtpos++;
-    // Hier speichern wir den Zeiger auf den Beginn der Formel
-    function[idx].formula = txtpos;
+    function[idx].formula = txtpos;                             // Hier speichern wir den Zeiger auf den Beginn der Formel
   }
 
-  // WICHTIG: Die Formel in dieser Zeile nicht ausführen!
-  // Wir setzen txtpos ans Ende der Zeile.
   txtpos = (char*)"";
 }
 
@@ -3551,17 +3463,12 @@ void cmd_pset() {
 
   int py = (int)expression(); // Y-Koordinate parsen
 
-  uint8_t col = 255; // Standardfarbe Weiß, falls keine Farbe angegeben wird
+  uint8_t col = windows[currentWinIdx].fcolor; // Vordergrundfarbe, falls keine Farbe angegeben wird
   if (*txtpos == ',') {
     txtpos++;
     col = (uint8_t)expression(); // Farbe parsen (0-255)
   }
-
-  // Sicherheitscheck: Nur zeichnen, wenn innerhalb der Bildschirmgrenzen
-  //if (px >= 0 && px < fb_width && py >= 0 && py < fb_height) {
   vga.drawPixel(px, py, col);
-  //}
-
 }
 
 //########################################################## TRON - Funktion ########################################################################################
@@ -3573,7 +3480,6 @@ void cmd_tron(unsigned long wait, int index) {
 }
 //########################################################## PIC - Befehl ############################################################################################
 
-
 int getFileTypeID(const char* filename) {
   String name = String(filename);
   name.toLowerCase();
@@ -3584,8 +3490,7 @@ int getFileTypeID(const char* filename) {
   return 0; // Unbekannt
 }
 
-
-int JPEGDraw(JPEGDRAW *pDraw) {
+int JPEGDraw(JPEGDRAW * pDraw) {
   uint16_t *pSrc = pDraw->pPixels;
   int xStart = pDraw->x;
   int yStart = pDraw->y;
@@ -3618,11 +3523,11 @@ void myClose(void *handle) {
   if (handle) myFile.close();
 }
 
-int32_t myRead(JPEGFILE *handle, uint8_t *buffer, int32_t length) {
+int32_t myRead(JPEGFILE * handle, uint8_t *buffer, int32_t length) {
   return myFile.read(buffer, length);
 }
 
-int32_t mySeek(JPEGFILE *handle, int32_t position) {
+int32_t mySeek(JPEGFILE * handle, int32_t position) {
   return myFile.seek(position);
 }
 
@@ -3668,21 +3573,12 @@ void drawBMP(const char* filename, int x, int y) {
 }
 
 //################################ Unterfunktion zu Einsammeln von Parametern ###########################################################################################
-/*
+
 Params getParams(int n) {
   Params p;
   for (int i = 0; i < n; i++) {
     p.val[i] = (int)expression();
-    if (i < n - 1 && *txtpos == ',') txtpos++;
-    else syntaxerror(syntaxmsg);
-  }
-  return p; // Die Struktur wird als Ganzes zurückgegeben
-}*/
-Params getParams(int n) {
-  Params p;
-  for (int i = 0; i < n; i++) {
-    p.val[i] = (int)expression();
-    
+
     // Wenn wir noch nicht beim letzten Element sind...
     if (i < n - 1) {
       if (*txtpos == ',') {
@@ -3690,7 +3586,7 @@ Params getParams(int n) {
       } else {
         // Nur hier ist es ein wirklicher Syntaxfehler!
         syntaxerror(syntaxmsg);
-        break; 
+        break;
       }
     }
   }
@@ -3700,8 +3596,6 @@ Params getParams(int n) {
 
 void resetWindows() {
   currentWinIdx = 0; // Zurück zum Hauptbildschirm
-  //x_pos = windows[0].curX;
-  //y_pos = windows[0].curY;
   for (int i = 1; i <= 6; i++) {
     // Fenster 1-6: "Löschen" (Breite/Höhe auf 0 setzen)
     windows[i].x = 0;
@@ -3719,109 +3613,28 @@ void resetWindows() {
 
 
 void drawWindow_BordersOnly(int id) {
-  
+
   // Nur die grafischen Linien und den Titelbalken zeichnen
   vga.drawline((windows[id].x * 8) - 1, windows[id].y * 8, windows[id].w * 8, windows[id].y * 8, windows[id].tcolor);
   vga.drawline((windows[id].x * 8) - 1, windows[id].y * 8, (windows[id].x * 8) - 1, windows[id].h * 8, windows[id].tcolor);
   vga.drawline((windows[id].x * 8) - 1, windows[id].h * 8, windows[id].w * 8, windows[id].h * 8, windows[id].tcolor);
   vga.drawline(windows[id].w * 8, windows[id].y * 8, windows[id].w * 8, windows[id].h * 8, windows[id].tcolor);
   vga.drawRect(windows[id].x * 8 , windows[id].y * 8, (windows[id].w * 8) - (windows[id].x * 8), 8 , windows[id].tcolor);
-  /*
-  int x1 = windows[id].x;
-  int y1 = windows[id].y;
-  int x2 = windows[id].w - 1;
-  int y2 = windows[id].h - 1;
-  
-  if (strlen(windows[id].title) > 0) {
-    int tLen = strlen(windows[id].title);
-    for (int i = 0; i < tLen && (x1 + 2 + i) < x2; i++) {
-      screenBuffer[y1][x1 + 2 + i] = windows[id].title[i];
-      colorBuffer_F[y1][x1 + 2 + i] = windows[id].fcolor;
-      colorBuffer_H[y1][x1 + 2 + i] = windows[id].tcolor;
-    }
-  }*/
+
   if (strlen(windows[id].title) > 0) {
     vga.drawText((windows[id].x * 8) + 8 + 8 , windows[id].y * 8 , windows[id].title, windows[id].fcolor, windows[id].tcolor, false);
   }
   vga.drawRect(windows[id].x * 8 , windows[id].y * 8, 8, 8 , windows[id].tcolor);
 }
 
-/*
-void drawWindow_BordersOnly(int id) {
-  uint8_t fg = windows[id].fcolor;
-  uint8_t bg = windows[id].bcolor;
-  uint8_t tc = windows[id].tcolor;
 
-  int x1 = windows[id].x;
-  int y1 = windows[id].y;
-  int x2 = windows[id].w - 1;
-  int y2 = windows[id].h - 1;
-
-  // 1. Die Titelzeile (oberste Zeile) komplett im Puffer mit tcolor füllen
-  for (int x = x1; x <= x2; x++) {
-    screenBuffer[y1][x] = ' ';
-    colorBuffer_F[y1][x] = fg;
-    colorBuffer_H[y1][x] = tc; // Hintergrund der Titelzeile
-  }
-
-  // 2. Den Titel-Text in den Puffer schreiben
-  if (strlen(windows[id].title) > 0) {
-    int tLen = strlen(windows[id].title);
-    for (int i = 0; i < tLen && (x1 + 2 + i) < x2; i++) {
-      screenBuffer[y1][x1 + 2 + i] = windows[id].title[i];
-      colorBuffer_F[y1][x1 + 2 + i] = fg;
-      colorBuffer_H[y1][x1 + 2 + i] = tc;
-    }
-  }
-
-  // 3. Den gesamten Fensterbereich (inkl. Titelzeile) einmal auf den Screen bringen
-  // Wir nutzen deine outchar-Logik oder ein einfaches Neuzeichnen der betroffenen Zeilen
-  for (int y = y1; y <= y2; y++) {
-    for (int x = x1; x <= x2; x++) {
-      char buf[2] = { (char)screenBuffer[y][x], 0 };
-      vga.drawText(x * 8, y * 8, buf, colorBuffer_F[y][x], colorBuffer_H[y][x], false);
-    }
-  }
-
-  // 4. Grafische Linien (Optional, wenn du hauchdünne Linien um den 8px-Block willst)
-  vga.drawRect(x1 * 8, y1 * 8, (x2 - x1 + 1) * 8, (y2 - y1 + 1) * 8, tc);
-}
-*/
-/*
-void drawWindowInPool(int winIdx) {
-  int x1 = windows[winIdx].x;
-  int y1 = windows[winIdx].y;
-  int x2 = windows[winIdx].w - 1;
-  int y2 = windows[winIdx].h - 1;
-  uint8_t fg = windows[winIdx].fcolor;
-  uint8_t bg = windows[winIdx].bcolor;
-
-  // 1. Ecken in den Puffer schreiben (Nutze deine gespiegelten Font-Indizes)
-  writeToBuffer(x1, y1, 138, fg, bg); // Ecke oben links
-  writeToBuffer(x2, y1, 139, fg, bg); // Ecke oben rechts
-  writeToBuffer(x1, y2, 140, fg, bg); // Ecke unten links
-  writeToBuffer(x2, y2, 141, fg, bg); // Ecke unten rechts
-
-  // 2. Horizontale Linien
-  for (int x = x1 + 1; x < x2; x++) {
-    writeToBuffer(x, y1, 142, fg, bg);
-    writeToBuffer(x, y2, 142, fg, bg);
-  }
-
-  // 3. Vertikale Linien
-  for (int y = y1 + 1; y < y2; y++) {
-    writeToBuffer(x1, y, 141, fg, bg);
-    writeToBuffer(x2, y, 141, fg, bg);
-  }
-}
-*/
 // Hilfsfunktion, die Puffer UND VGA gleichzeitig bedient
 void writeToBuffer(int x, int y, unsigned char c, uint8_t fg, uint8_t bg) {
   if (x >= 0 && x < MAX_C && y >= 0 && y < MAX_R) {
     screenBuffer[y][x] = c;
     colorBuffer_F[y][x] = fg;
     colorBuffer_H[y][x] = bg;
-    
+
     // Sofort auf VGA ausgeben
     char buf[2] = {(char)c, 0};
     vga.drawText(x * 8, y * 8, buf, fg, bg, false);
@@ -3834,28 +3647,27 @@ void drawWindowTitle(int winIdx) {
   int x1 = windows[winIdx].x;
   int y1 = windows[winIdx].y;
   int width = windows[winIdx].w - x1;
-  
-  String t = " " + String(windows[winIdx].title) + " "; // Padding für bessere Optik
+
+  String t = " " + String(windows[winIdx].title) + " ";
   int tLen = t.length();
-  
+
   // Titel zentrieren (innerhalb der Fensterbreite)
   int startX = x1 + (width - tLen) / 2;
-  if (startX <= x1) startX = x1 + 1; // Sicherstellen, dass die linke Ecke bleibt
+  if (startX <= x1) startX = x1 + 1;
 
   for (int i = 0; i < tLen; i++) {
     int targetX = startX + i;
-    if (targetX < windows[winIdx].w - 1) { // Nicht über die rechte Ecke schreiben
-      // Titel in den Puffer und auf VGA (Invertierte Farben oder tcolor nutzen)
+    if (targetX < windows[winIdx].w - 1) {
       writeToBuffer(targetX, y1, t[i], windows[winIdx].tcolor, windows[winIdx].fcolor);
     }
   }
 }
 
 void cmd_win() {
-  bool switch_win = false;
+  //bool switch_win = false;
   spaces();
   drawCursor(false);
-  
+
   // 1. Hauptfenster-Reset (WINDOW ohne alles)
   if (*txtpos == ':' || *txtpos == '\0') {
     windows[currentWinIdx].curX = x_pos;
@@ -3877,7 +3689,7 @@ void cmd_win() {
   currentWinIdx = nr;
 
   if (*txtpos == ',') {
-    isRedefinition = true;                                   //Fenster wird auf jeden Fall neu gezeichnet (incl.Inhalt)
+    isRedefinition = true;                                            //Fenster wird auf jeden Fall neu gezeichnet (incl.Inhalt)
     txtpos++;
     Params lp = getParams(4);
 
@@ -3887,12 +3699,12 @@ void cmd_win() {
     windows[currentWinIdx].h = constrain(lp.val[3], windows[currentWinIdx].y + 1, MAX_R);
     windows[currentWinIdx].curX = constrain(lp.val[0] + 1, 0, MAX_C - 1);
     windows[currentWinIdx].curY = constrain(lp.val[1] + 1, 0, MAX_R - 1);
-    
+
     windows[currentWinIdx].fcolor = windows[0].fcolor;    // Standardfarben setzen, falls keine farben angegeben werden
     windows[currentWinIdx].bcolor = windows[0].bcolor;
     windows[currentWinIdx].tcolor = 0;
     windows[currentWinIdx].title  = "";
-    
+
   }
 
   if (*txtpos == ',') {
@@ -3903,7 +3715,7 @@ void cmd_win() {
     if (*txtpos == ',') txtpos++;
     windows[currentWinIdx].bcolor = expression();
     if (*txtpos == ',') txtpos++;
-    static String winTitles[30]; 
+    static String winTitles[30];
     winTitles[currentWinIdx] = parseStringExpression();
     windows[currentWinIdx].title = winTitles[currentWinIdx].c_str();
 
@@ -3913,19 +3725,19 @@ void cmd_win() {
   }
 
   if (*txtpos == ')') txtpos++;
-  
+
   x_pos = windows[currentWinIdx].curX;                                                        // Globalen Cursor laden (entweder den alten oder den soeben zurückgesetzten)
   y_pos = windows[currentWinIdx].curY;
-  
+
   // Fenster neu erstellt, dann gesamtes Fenster neu zeichnen
   if (isRedefinition) {
-  for (int y = windows[currentWinIdx].y; y < windows[currentWinIdx].h; y++) {
-    for (int x = windows[currentWinIdx].x; x < windows[currentWinIdx].w; x++) {
-      writeToBuffer(x, y, ' ', windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor);
+    for (int y = windows[currentWinIdx].y; y < windows[currentWinIdx].h; y++) {
+      for (int x = windows[currentWinIdx].x; x < windows[currentWinIdx].w; x++) {
+        writeToBuffer(x, y, ' ', windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor);
+      }
     }
+    vga.drawRect(windows[currentWinIdx].x * 8, (windows[currentWinIdx].y * 8 ) , (windows[currentWinIdx].w * 8) - (windows[currentWinIdx].x * 8), ((windows[currentWinIdx].h * 8) - (windows[currentWinIdx].y * 8 )), windows[currentWinIdx].bcolor);
   }
-  vga.drawRect(windows[currentWinIdx].x * 8, (windows[currentWinIdx].y * 8 ) , (windows[currentWinIdx].w * 8) - (windows[currentWinIdx].x * 8), ((windows[currentWinIdx].h * 8) - (windows[currentWinIdx].y * 8 )), windows[currentWinIdx].bcolor);
-}
   drawWindow_BordersOnly(currentWinIdx);                                                      // Fenster gewechselt, dann nur Rahmen neuzeichnen
   drawCursor(cursor_on_off);
 }
@@ -3950,7 +3762,7 @@ void cmd_renum() {
   spaces();
   int nextLine = 10;                                                                    // Standard-Startwert
   int step = 10;                                                                        // Standard-Schrittweite
-
+  //print(txtpos);
   if (*txtpos != NL && *txtpos != ':' && *txtpos != '\0') {
     nextLine = (int)expression();                                                       // (Startwert)
 
@@ -3976,32 +3788,33 @@ void cmd_renum() {
   delete[] mapping; // Speicher freigeben
 }
 
-void processLineJumps(int lineIdx, RenumMap* mapping, int mapSize) {
+void processLineJumps(int lineIdx, RenumMap * mapping, int mapSize) {
   char* text = program[lineIdx].text;
   const char* kGOTO = "GOTO";
   const char* kGOSUB = "GOSUB";
   const char* kON = "ON";
+  //int jumpType;
 
   char* p = text;
   while (*p != '\0') {
     if (strncmp(p, "REM", 3) == 0) break;                                               // bei REM Zeile komplett überspringen
     char* targetPos = NULL;
-    int jumpType = 0;
+    //jumpType = 0;
 
     if (strncmp(p, kGOTO, 4) == 0) {
       targetPos = p + 4;  // 1: GOTO/GOSUB
-      jumpType = 1;
+      //jumpType = 1;
     }
     else if (strncmp(p, kGOSUB, 5) == 0) {
       targetPos = p + 5;
-      jumpType = 1;
+      //jumpType = 1;
     }
     else if (strncmp(p, kON, 2) == 0) {                                                 // 2: ON ,GOTO/GOSUB dahinter suchen
       char* s = p + 2;
       while (*s != '\0' && strncmp(s, kGOTO, 4) != 0 && strncmp(s, kGOSUB, 5) != 0) s++;
       if (*s != '\0') {
         targetPos = (strncmp(s, kGOTO, 4) == 0) ? s + 4 : s + 5;
-        jumpType = 2;
+        //jumpType = 2;
       }
     }
 
@@ -4050,13 +3863,13 @@ void processLineJumps(int lineIdx, RenumMap* mapping, int mapSize) {
 void Basic_interpreter() {
   int lineNumber;
   unsigned long tron_delay;
-  bool error = false;
+
 
   while (1) {
     myusb.Task();
 
     if (!isRunning) {                                      // --- 1. Direktmodus ---
-      error = false;
+      isError = false;
       getln(1);
       spaces();
       if (*txtpos == '\0') continue;
@@ -4074,14 +3887,14 @@ void Basic_interpreter() {
         continue;
       }
       if (!jumped) {
-        error = false;
         txtpos = program[currentLineIndex].text;
       }
     }
 
 
-    while (!error){ //*txtpos != 0)  {                     // --- 2. ZEILEN-SCHLEIFE ---
-     
+
+    while (!isError) { //*txtpos != 0)  {                     // --- 2. ZEILEN-SCHLEIFE ---
+
       jumped = false;
       myusb.Task();
 
@@ -4099,9 +3912,9 @@ void Basic_interpreter() {
         continue;
       }
       spaces();
-
+      //print(*txtpos);
       int token = getCommandToken();
-
+      //print(token);
       if (token == TOKEN_END) break;
 
       switch (token) {
@@ -4181,7 +3994,7 @@ void Basic_interpreter() {
               txtpos = program[currentLineIndex].text;
               jumped = true;
             } else {
-              printmsg(wronglinenr, 0);
+              syntaxerror(wronglinenr);
               println(target);
               print("in Line:");
               println(program[currentLineIndex].number);
@@ -4266,7 +4079,7 @@ void Basic_interpreter() {
           break;
 
         case TOKEN_NEXT: {
-            int t = getFunctionToken();
+            getFunctionToken();
             if (forStackPtr > 0) {
               int sIdx = forStackPtr - 1;
               int v1 = forStack[sIdx].vIdx1;
@@ -4311,8 +4124,17 @@ void Basic_interpreter() {
 
         case TOKEN_LINE: {
             spaces();
-            Params lp = getParams(5);
-            vga.drawline(lp.val[0], lp.val[1], lp.val[2], lp.val[3], lp.val[4]);
+            Params lp = getParams(4);
+            int c;
+            if (*txtpos == ',') {
+              txtpos++;
+              c = expression();
+            }
+            else {
+              c = windows[currentWinIdx].fcolor;
+            }
+
+            vga.drawline(lp.val[0], lp.val[1], lp.val[2], lp.val[3], c);
           }
           break;
 
@@ -4348,20 +4170,7 @@ void Basic_interpreter() {
         case TOKEN_ERROR:
           if (strlen(txtpos) > 0) {
             syntaxerror(syntaxmsg);
-            print(program[currentLineIndex].number);
-            print(" ");
-            print(program[currentLineIndex].text);
-            println(""); 
-            char buf[10];
-            int numLen = sprintf(buf, "%d", program[currentLineIndex].number);
-            int errorOffset = (txtpos - program[currentLineIndex].text);
-            for (int i = 0; i < (numLen + 1 + errorOffset); i++) {                // 3. Die entsprechende Anzahl Leerzeichen drucken
-              print(" ");
-            }
-            println("^");                                                         //markiert die Fehlerstelle
             isRunning = false;
-            //*txtpos = '\0';
-            error = true;
           }
           break;
 
@@ -4378,7 +4187,7 @@ void Basic_interpreter() {
       }
 
       if (*txtpos != '\0') continue;                                                      // 3. Wenn die Zeile noch nicht zu Ende ist (z.B. nach THEN)
-      
+
       if (isRunning ) {                                                                   //Nur wenn wir am echten Ende (\0) sind UND nicht gesprungen wurde:
         if (*txtpos == '\0') {                                                            // Wenn wir am Ende der Zeile stehen (\0)
           if (tron_marker) cmd_tron(tron_delay, currentLineIndex);                        // TRON-Funktion nur im RUN-Modus
@@ -4391,7 +4200,9 @@ void Basic_interpreter() {
           }
         }
       }
+      //delay(0);
       yield();
+      vga.waitSync();
       break;
 
     }  //while(*txtpos != '\0')
@@ -4400,7 +4211,23 @@ void Basic_interpreter() {
   }// while(1)
 } //Basic-Interpreter
 
+void check_error() {
+  if (currentLineIndex > 0)
+  {
+    print(program[currentLineIndex].number);
+    print(" ");
+    print(program[currentLineIndex].text);
+    println("");
+    char buf[10];
+    int numLen = sprintf(buf, "%d", program[currentLineIndex].number);
+    int errorOffset = (txtpos - program[currentLineIndex].text);
+    for (int i = 0; i < (numLen + 1 + errorOffset); i++) {                // 3. Die entsprechende Anzahl Leerzeichen drucken
+      print(" ");
+    }
+    println("^");                                                         //markiert die Fehlerstelle
 
+  }
+}
 //########################################################## RTC - auslesen ####################################################################################
 time_t getTeensy3Time() {
   return Teensy3Clock.get();
@@ -4507,7 +4334,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
 
       case 8:   // Backspace (ASCII 8)
       case 127: // Backspace (oft bei USB-Tastaturen)
-        
+
         if (cursor > 0) {
           drawCursor(false);
 
@@ -4516,7 +4343,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
 
           length--;
           cursor--;
-          
+
           // 2. Cursor-Position grafisch zurücksetzen
           if (x_pos <= x_min) {
             x_pos = x_max - 1;
@@ -4533,8 +4360,9 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
             outchar(buffer[i]);
           }
 
-          // Das ehemals letzte Zeichen am Zeilenende im Fenster löschen
-          vga.drawText(x_pos * 8, y_pos * 8, "  ", windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor, false);
+
+          outchar(' ');                                                                                                  // Das Zeichen unter dem Cursor löschen
+          vga.drawText(x_pos * 8, y_pos * 8, "  ", windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor, false); // Das ehemals letzte Zeichen am Zeilenende im Fenster löschen
 
           // 5. Cursor wieder dorthin setzen, wo gelöscht wurde
           x_pos = tempX;
@@ -4628,15 +4456,17 @@ void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
   uint8_t mod = keyboard1.getModifiers();
   bool shift = (mod & 0x02) || (mod & 0x20);
   bool altGr = (mod & 0x40);
-
-// 1.PRIORITÄT: AltGr (muss vor Unicode kommen!)
+  //print(keycode);
+  // 1.PRIORITÄT: AltGr (muss vor Unicode kommen!)
   if (altGr) {
     switch (keycode) {
+
       case 36: lastUsbChar = 0x7B; return; // { (Taste 7)
       case 37: lastUsbChar = 0x5B; return; // [ (Taste 8)
       case 38: lastUsbChar = 0x5D; return; // ] (Taste 9)
       case 39: lastUsbChar = 0x7D; return; // } (Taste 0)
-      case 100: lastUsbChar = 0x7C; return; //| (Taste <) - Hier war ein Tippfehler (0x7C statt 0x7D)!
+      case 100: lastUsbChar = 0x7C; return; //| (Taste <)
+        //case 114: lastUsbChar = '\''; return;
     }
   }
 
@@ -4646,32 +4476,33 @@ void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
   }
 
   switch (keycode) {
+
     case 40: lastUsbChar = 13; return; // Enter
     case 42: lastUsbChar = 8;  return; // Backspace
     case 41:                           // ESC
       lastUsbChar = 27;
       break_marker = true;
       return;
-    
+    case 50: lastUsbChar = 35; return;
+    case 53: lastUsbChar = '^'; return; // Zirkumflex
     case 100:
       if (shift) lastUsbChar = '>';
       else lastUsbChar = '<';
       return;
-      
-    case 53: lastUsbChar = '^'; return; // Zirkumflex
+
+
   }
 }
-
 //########################################################## SETUP ########################################################################################
 
 void setup() {
-/*
-  Serial.begin(9600);
-  delay(1000);
-  if (CrashReport) {
-    Serial.print(CrashReport); // Zeigt an, ob es ein Speicherfehler (MPU) oder ähnliches war
-  }
-*/
+  /*
+    Serial.begin(9600);
+    delay(1000);
+    if (CrashReport) {
+      Serial.print(CrashReport); // Zeigt an, ob es ein Speicherfehler (MPU) oder ähnliches war
+    }
+  */
   myusb.begin();
   //keyboard1.forceBootProtocol();
   keyboard1.attachPress(OnPress);
