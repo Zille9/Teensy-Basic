@@ -20,7 +20,12 @@
 //                                         -Umbau der cmd_print auf Token jetzt auch funktionsfähig.
 //                                         -lange Variablennamen mögich, es werden aber nur die ersten beiden Zeichen genutzt
 //                                         -cmd_save mit Überschreib-Abfrage ergänzt
-//                                         -362514 Zeilen/sek. (Fastest)
+//                                         -Befehl POS x,y hinzugefügt
+//                                         -da die Funktion wait_key solange wartet bis eine Taste gedrückt wird, könnte man das als Befehl nutzen ->IF WAITKEY="j" then END
+//                                         -Fehler in der Befehlsschleife (while (!isError)) behoben, eine Zeile z.Bsp. 10 goto 10 führte bei ESC dazu, das der Inetrpreter in der schleife hängen blieb (kein READY)
+//                                         -DIR und DUMP-Ausgabe geändert damit auch eine Darstellung bei 320x240 möglich wäre
+//                                         -Fontdatei vom Hive übernommen somit sind viele pseudografikzeichen verfügbar - zur Ausgabe F12 drücken und Tasten 0 - 9, A - Z, a - z benutzen
+//                                         -354514 Zeilen/sek. (Fastest)
 //
 //Version 1.8 26.04.2026                   -USING für formatierte Ausgabe von Zahlen integriert PRINT USING"##.##",23.456 -> 23.46
 //                                         -funktioniert auch in Kombination mit anderen Print-Anweisungen
@@ -106,6 +111,7 @@ JPEGDEC jpeg;
 #define BUF_SIZE 80
 char inputBuffer[BUF_SIZE];
 static char *txtpos;
+static char *fehler_txtpos;
 bool inQuotes = false;
 extern "C" uint8_t external_psram_size;
 
@@ -168,11 +174,60 @@ volatile int lastUsbChar = -1;              //Merker für die letzte gedrückte 
 #define CTRLH 0x08
 #define CTRLS 0x13
 
-//static char *current_line;
-//typedef short unsigned LINENUM;
 
 //**************************************************Audio-Einstellungen**************************************************************
-unsigned long soundEndTime[3] = {0, 0, 0};
+/*
+  #include <Audio.h>
+
+  AudioSynthWaveform      wav1; AudioEffectEnvelope     env1;  //Stimme 1
+  AudioSynthWaveform      wav2; AudioEffectEnvelope     env2;  //Stimme 2
+  AudioSynthWaveform      wav3; AudioEffectEnvelope     env3;  //Stimme 3
+  AudioSynthWaveform      wav4; AudioEffectEnvelope     env4;  //Stimme 4
+  AudioSynthWaveform* waveforms[] = {&wav1, &wav2, &wav3, &wav4};
+  AudioEffectEnvelope* envelopes[] = {&env1, &env2, &env3, &env4};
+
+  AudioSynthNoiseWhite    noise1;       // Der Rauschgenerator
+  #define envNoise envelope2
+  AudioEffectEnvelope     envelope2;    // Separate Hüllkurve für Rauschen
+  AudioFilterStateVariable filter1;     // Das Filter-Modul
+  AudioMixer4             mixer1;
+  AudioMixer4             mixer2;
+  AudioOutputI2S          i2s1;
+
+  // Verbindungen
+
+
+  // Verbindungen (Patches)
+  AudioConnection p1(wav1, 0, env1, 0); AudioConnection p2(env1, 0, mixer1, 0);
+  AudioConnection p3(wav2, 0, env2, 0); AudioConnection p4(env2, 0, mixer1, 1);
+  AudioConnection p5(wav3, 0, env3, 0); AudioConnection p6(env3, 0, mixer1, 2);
+  AudioConnection p7(wav4, 0, env4, 0); AudioConnection p8(env4, 0, mixer1, 3);
+  // 2. Noise in einen eigenen Envelope
+  AudioConnection pn1(noise1, 0, envNoise, 0);
+  // 3. Mixer 1 UND Noise in einen ZWEITEN Mixer (mixer2) leiten
+  AudioConnection p9(mixer1, 0, mixer2, 0);  // Musik-Mix
+  AudioConnection p10(envNoise, 0, mixer2, 1); // Noise-Effekte
+  // 4. Ausgang von Mixer 2 in den Filter und dann zum I2S
+  AudioConnection p11(mixer2, 0, filter1, 0);
+  AudioConnection p12(filter1, 0, i2s1, 0);
+  AudioConnection p13(filter1, 0, i2s1, 1);
+
+  unsigned long soundEndTime[3] = {0, 0, 0};
+
+  int globalBpm = 120;
+  float fullNoteMs = 2000.0f; // Dauer einer ganzen Note bei aktuellem BPM
+
+  String playBuffer[5];
+  unsigned long nextNoteTime[5] = {0, 0, 0, 0, 0};
+  int playOctave[5] = {4, 4, 4, 4, 4};
+  int playNoteDiv[5] = {4, 4, 4, 4, 4};
+  bool isPlaying[5] = {false, false, false, false, false};
+
+  #define MAX_PLAY_BUF 512 // Maximale Länge eines Musik-Strings
+  volatile char musicBuf[5][MAX_PLAY_BUF];
+  volatile int readIdx[5] = {0, 0, 0, 0, 0};
+  volatile int writeIdx[5] = {0, 0, 0, 0, 0};
+*/
 //********************************************************************************************************************************
 
 #define MAX_GOSUB_STACK 25
@@ -380,6 +435,7 @@ enum {
   TOKEN_RENUM,
   TOKEN_USING,            //60
   TOKEN_SID,       //letzter Basic-Befehl
+  TOKEN_POS,
   TOKEN_RND,       //erster Funktions-Befehl
   TOKEN_SQR,
   TOKEN_SIN,
@@ -463,6 +519,7 @@ Keyword commands[] = {
   {"PAUSE", TOKEN_PAUSE},
   {"PEN", TOKEN_PEN},
   {"PIC", TOKEN_PIC},
+  {"POS", TOKEN_POS},
   {"PRINT", TOKEN_PRINT},
   {"PSET", TOKEN_PSET},
   {"READ", TOKEN_READ},
@@ -677,6 +734,7 @@ void drawCursor(bool state) {
     char buf[2] = {c, 0};
     vga.drawText(px, py, buf, fg, bg, false);
   }
+
   yield();
 }
 
@@ -957,7 +1015,7 @@ void getln(int showReady) {
     // Bei ESC: Zeile leeren
     inputBuffer[0] = '\0';
     txtpos = inputBuffer;
-    println("Break!");
+    //println("Break!");
 
   }
 }
@@ -970,7 +1028,7 @@ static int inchar() {
   while (1) {
     myusb.Task();
     if (cursor_on_off) {
-      if (millis() - lastBlink > 300) {
+      if (millis() - lastBlink > 250) {
         cursor_state = !cursor_state;
         drawCursor(cursor_state);
         lastBlink = millis();
@@ -992,6 +1050,9 @@ static void syntaxerror(const char *msg)
 {
   if (isError == true) return;
 
+  //  waveforms[0]->frequency(220); //Beep bei jedem Fehler! Tiefer Ton
+  //  envelopes[0]->noteOn();
+
   char* lineStart = program[currentLineIndex].text;
   if (isRunning) {
     if (lineStart != NULL) {
@@ -999,7 +1060,7 @@ static void syntaxerror(const char *msg)
       print(program[currentLineIndex].number);                                    // Ausgabe der Zeilennummer
       print(" ");
       println(lineStart);
-      int offset = txtpos - lineStart;                                            // Versatz berechnen: Aktuelle Position minus Startposition im Text
+      int offset = fehler_txtpos - lineStart;                                            // Versatz berechnen: Aktuelle Position minus Startposition im Text
 
       int numDigits = 0;
       int tempNum = program[currentLineIndex].number;
@@ -1081,13 +1142,12 @@ static uint16_t wait_key(bool modes) {
     printmsg("SPACE<Continue> / ESC <Exit>", 1);
   }
   while (1) {
-    // 1. Terminal-Check
     if (lastUsbChar != -1) {
-      int c = lastUsbChar;
+      uint16_t c = lastUsbChar;
       lastUsbChar = -1;
-      return (uint16_t)c;
+      return c;
     }
-    yield();
+    vga.waitSync();
   }
 }
 
@@ -2516,24 +2576,32 @@ void cmd_files() {
       else if (fileNameUpper.indexOf(".BMP") != -1 || fileNameUpper.indexOf(".JPG") != -1) fbcolor(RED, 0);
       else if (entry.isDirectory()) fbcolor(YELLOW, 0);
 
-      print(fileName);
-      if (entry.isDirectory()) print("/");
+      // --- DATEINAME KÜRZEN (NEU) ---
+      String displayPrev = fileName;
+      if (entry.isDirectory()) displayPrev += "/";
 
-      // Auffüllen bis Spalte 16
-      int pad = 20 - fileName.length() - (entry.isDirectory() ? 1 : 0);
+      // Wenn der Name länger als 17 Zeichen ist, kürzen wir ihn
+      if (displayPrev.length() > 17) {
+        displayPrev = displayPrev.substring(0, 14) + "...";
+      }
+
+      print(displayPrev);
+
+      // Auffüllen bis Spalte 18 (NEU: displayPrev nutzen)
+      int pad = 18 - displayPrev.length();
       for (int i = 0; i < pad; i++) print(" ");
 
       fbcolor(WHITE, 0);
 
-      // 2. GRÖSSE (Spalte 2, Breite 10 Zeichen)
+      // 2. GRÖSSE (Spalte 2, Breite 9 Zeichen)
       if (entry.isDirectory()) {
         fbcolor(YELLOW, 0);
-        print("<DIR>     ");
+        print("<DIR>    ");
         fbcolor(WHITE, 0);
       } else {
         String sSize = String((unsigned long)entry.size());
         print(sSize);
-        for (int i = 0; i < (10 - sSize.length()); i++) print(" ");
+        for (int i = 0; i < (9 - sSize.length()); i++) print(" ");
       }
 
       // 3. DATUM (Spalte 3)
@@ -2683,6 +2751,7 @@ void cmd_load() {
 
 //############################################################ SAVE ######################################################################
 void cmd_save() {
+  //musicTimer.end(); // Timer kurz stoppen
   spaces();
   String fileNameStr = parseStringExpression();
 
@@ -2725,6 +2794,7 @@ void cmd_save() {
     file.println(program[j].text);
   }
   file.close();
+  //musicTimer.begin(musicInterrupt, 20000); // Wieder starten
 }
 
 //############################################################ DEL  ########################################################################
@@ -3364,19 +3434,19 @@ void hexMonitor(uint8_t* startAddr) {
 
   while (1) {
     uint32_t relativeAddr = (uint32_t)((uintptr_t)startAddr - 0x70000000);
-    vprintf("%06X: ", relativeAddr);
+    vprintf("%06X:", relativeAddr);
 
     for (int j = 0; j < 8; j++) {
       vprintf("%02X ", startAddr[j]);
     }
-    print("   ");
+    //print(" ");
 
     for (int j = 0; j < 8; j++) {
       char c = startAddr[j];
       print((c >= 32 && c <= 126) ? c : '.');
     }
-    println("|");
-
+    //println("|");
+    println();
     startAddr += 8;
     zeilen++;
 
@@ -3858,6 +3928,15 @@ void processLineJumps(int lineIdx, RenumMap * mapping, int mapSize) {
   }
 }
 
+void cmd_pos() {
+  spaces();
+  int x = expression();
+  if (Test_char(',')) return;
+  int y = expression();
+  x_pos = x;
+  y_pos = y;
+}
+
 
 //#################################################################################### Hauptprogrammschleife ###########################################################################################
 void Basic_interpreter() {
@@ -3900,11 +3979,14 @@ void Basic_interpreter() {
 
       if (break_marker) {
         line_terminator();
-        print("Break in Line ");
-        println(program[currentLineIndex].number);           //Zeilennummer ausgeben
+        if(isRunning) {
+          printmsg(breakmsg,0);
+          println(program[currentLineIndex].number);           //Zeilennummer ausgeben
+        }
         currentLineIndex = 0;
         break_marker = false;
         isRunning = false;
+        isError = true;
       }
 
       if (*txtpos == ':') {
@@ -3913,8 +3995,9 @@ void Basic_interpreter() {
       }
       spaces();
       //print(*txtpos);
+      fehler_txtpos = txtpos;
       int token = getCommandToken();
-      //print(token);
+      
       if (token == TOKEN_END) break;
 
       switch (token) {
@@ -3955,13 +4038,12 @@ void Basic_interpreter() {
         case TOKEN_WEND:  cmd_wend();  break;
         case TOKEN_VARIABLE: cmd_assignment(); break;
         case TOKEN_INPUT: cmd_input(); break;
-
+        case TOKEN_POS: cmd_pos(); break;
         case TOKEN_PEN: {
             int c = (int)expression();
             fbcolor(c, 0);
             break;
           }
-
 
         case TOKEN_TRON: {
             if (*txtpos == '\0') tron_delay = 0;
@@ -3975,6 +4057,7 @@ void Basic_interpreter() {
             tron_delay = 0;
           }
           break;
+          
         case TOKEN_ELSE: {
             if (last_if_result) {
               if (tron_marker && isRunning) {                                                     // TRON-Funktion nur im RUN-Modus
@@ -4178,7 +4261,7 @@ void Basic_interpreter() {
 
           break;
       }
-
+      yield();
       spaces();
 
       if (*txtpos == ':') {
@@ -4202,10 +4285,10 @@ void Basic_interpreter() {
       }
       //delay(0);
       yield();
-      vga.waitSync();
+
       break;
 
-    }  //while(*txtpos != '\0')
+    }//while(*txtpos != '\0')
 
     yield();                                                                                 //Watchdog-erholung
   }// while(1)
@@ -4383,8 +4466,8 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
 
           // Den gesamten Rest ab Cursor drucken (outchar regelt Fenster-Umbruch)
           for (int i = cursor; i < length; i++) {
-            if (gfxMode && buffer[i] >= 'a' && buffer[i] <= 'z') {
-              buffer[i] += 31;//buffer[i] - 'a' + 1; // Mappt 'a' auf Font-Zeichen 1, 'b' auf 2, etc.
+            if (gfxMode && buffer[i] >= '0' && buffer[i] <= 'z') {
+              buffer[i] += 78;//buffer[i] - 'a' + 1; // Mappt 'a' auf Font-Zeichen 1, 'b' auf 2, etc.
             }
 
             outchar(buffer[i]);
@@ -4493,9 +4576,21 @@ void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
 
   }
 }
+/*
+  FASTRUN void musicInterrupt() {
+  for (int i = 0; i < 5; i++) {
+    updateMusic(i);
+    vga.waitSync();
+  }
+
+  }
+*/
 //########################################################## SETUP ########################################################################################
 
 void setup() {
+  //AudioMemory(40);
+  //setupAudio();
+
   /*
     Serial.begin(9600);
     delay(1000);
@@ -4512,12 +4607,25 @@ void setup() {
   //while (!Serial);
 
   vga_error_t err = vga.begin(VGA_MODE_640x480);//352x240);
+  SCB_SHPR3 = 0x20202020; // Setzt System-Interrupts auf hohe Priorität
   if (err != 0)
   {
     println("fatal error");
     while (1);
   }
+  NVIC_SET_PRIORITY(IRQ_QTIMER3, 32);
+  // IRQ_FLEXIO1/2 sind für die Datenübertragung (Pixel) zuständig
+  NVIC_SET_PRIORITY(IRQ_FLEXIO1, 32);
+
+  // Audio-Interrupts auf niedrigere Priorität setzen (über 128)
+  // Das verhindert das Zittern, kann aber minimale Audio-Knackser verursachen
+  NVIC_SET_PRIORITY(IRQ_SOFTWARE, 200);
+  // Falls du den Standard I2S-Ausgang nutzt (Pin 21, 7, 20)
+  NVIC_SET_PRIORITY(IRQ_SAI1, 200);
+
   vga.get_frame_buffer_size(&fb_width, &fb_height);
+  vga.begin_gfxengine(1, 1, 1);
+
   // In der Initialisierung (z.B. bei vga.init)
   for (int r = 0; r < MAX_R; r++) {
     for (int c = 0; c < MAX_C; c++) {
@@ -4537,6 +4645,7 @@ void setup() {
   windows[currentWinIdx].curX = 0;
   windows[currentWinIdx].curY = 0;
   cmd_cls();
+
 
   printmsg(" *** TEENSY BASIC ", 0);
   print(BasicVersion);
