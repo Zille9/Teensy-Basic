@@ -233,15 +233,15 @@ public:
   // 16x16 pixels tiles or 8x8 if USE_8PIXTILES is set
   //#define USE_8PIXTILES 1
   #ifdef USE_8PIXTILES
-  #define TILES_COLS        40
-  #define TILES_ROWS        30
+  #define TILES_COLS        80
+  #define TILES_ROWS        60
   #define TILES_W           8
   #define TILES_H           8
   #define TILES_HBITS       3
   #define TILES_HMASK       0x7
   #else
-  #define TILES_COLS        20
-  #define TILES_ROWS        15
+  #define TILES_COLS        40
+  #define TILES_ROWS        30
   #define TILES_W           16
   #define TILES_H           16
   #define TILES_HBITS       4
@@ -249,9 +249,9 @@ public:
   #endif
   
   // 32 sprites 16x32 or max 64 16x16 (not larger!!!)
-  #define SPRITES_MAX       32
+  #define SPRITES_MAX       64
   #define SPRITES_W         16
-  #define SPRITES_H         32
+  #define SPRITES_H         16
 
   void begin_gfxengine(int nblayers, int nbtiles, int nbsprites);
   void run_gfxengine();

@@ -172,7 +172,7 @@ VGA_T4::VGA_T4(int vsync_pin)
 // Whole line          800  31.777557100298 us
 
 #define frame_freq     60.0     // Hz
-#define line_freq      31.46875 // KHz
+#define line_freq      31.469//875 // KHz
 #define pix_freq       (line_freq*800) // KHz (25.175 MHz)
 
 // pix_period = 39.7ns
@@ -284,7 +284,7 @@ vga_error_t VGA_T4::begin(vga_mode_t mode)
       fb_height = 480 ;
       fb_stride = left_border+fb_width+right_border;
       maxpixperline = fb_stride;
-      flexio_clock_div = (flexio_freq/pix_freq); 
+      flexio_clock_div = 10;//flexio_freq/pix_freq; 
       line_double = 0;
       pix_shift = 4;
       combine_shiftreg = 1;
@@ -623,7 +623,7 @@ vga_error_t VGA_T4::begin(vga_mode_t mode)
   CCM_CCGR6 |= 0xC0000000;              //enable clocks to CG15 of CGR6 for QT3
   //configure QTIMER3 Timer3 for test of alternating Compare1 and Compare2
   
-  #define MARGIN_N 1005 // 1206 at 720MHz //1005 at 600MHz
+  #define MARGIN_N 1005//1005 // 1206 at 720MHz //1005 at 600MHz
   #define MARGIN_D 1000
 
   TMR3_CTRL3 = 0b0000000000100000;      //stop all functions of timer 
@@ -1942,6 +1942,7 @@ void VGA_T4::begin_gfxengine(int nblayers, int nbtiles, int nbsprites)
 
   /* Random test tiles */
   char numhex[3];
+  /*
   for (int i=0; i<nb_tiles; i++)
   {
     int r = random(0x40,0xff);
@@ -1958,12 +1959,14 @@ void VGA_T4::begin_gfxengine(int nblayers, int nbtiles, int nbsprites)
       if (TILES_W == 16 )tileText(i, 0, 0, numhex, VGA_RGB(0xff,0xff,0xff), VGA_RGB(0x40,0x40,0x40), tilesbuffer,TILES_W,TILES_H); 
     }
   }
-  /* Random test sprites */
+  */
+  /*
+  
   for (int i=0; i<nb_sprites; i++)
   {
-    int r = random(0x40,0xff);
-    int g = random(0x40,0xff);
-    int b = random(0x40,0xff);
+   // int r = random(0x40,0xff);
+   // int g = random(0x40,0xff);
+   // int b = random(0x40,0xff);
     if (i==0) {
       memset((void*)&spritesbuffer[SPRITES_W*SPRITES_H*sizeof(vga_pixel)*i],0, SPRITES_W*SPRITES_H*sizeof(vga_pixel));     
     }
@@ -1974,7 +1977,7 @@ void VGA_T4::begin_gfxengine(int nblayers, int nbtiles, int nbsprites)
       numhex[2] = 0;
       tileText(i, 0, 0, numhex, VGA_RGB(0xff,0xff,0x00), VGA_RGB(0x00,0x00,0x00),spritesbuffer,SPRITES_W,SPRITES_H); 
     }
-  }
+  }*/
 }
 
 
@@ -2051,7 +2054,7 @@ void VGA_T4::run_gfxengine()
  }
 }
 
-void tile_data(unsigned char index, vga_pixel * data, int len)
+void VGA_T4::tile_data(unsigned char index, vga_pixel * data, int len)
 {
   memcpy((void*)&tilesbuffer[index*TILES_W*TILES_H],(void*)data,len); 
 }
