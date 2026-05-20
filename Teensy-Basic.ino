@@ -11,10 +11,19 @@
 //                                                                                                                                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#define BasicVersion "1.9"
-#define BuiltTime "01.05.2026"
+#define BasicVersion "2.0"
+#define BuiltTime "07.05.2026"
 
 //Logbuch
+//Version 2.0 07.05.2026                   -Tasten-Repeatfunktion eingebaut
+//                                         -editline erweitert mit HOME und END
+//                                         -GFX-Engine als Test mit eingebaut, es sind Tiles ladbar und Sprites definierbar, mal sehen ob das alles brauchbar ist
+//                                         -da in der Engine keine Kollisionsabfrage existiert müsste diese selbst erstellt werden
+//                                         -mehrere Befehle diesbezüglich eingefügt (SPRITE, TLOAD, TDRAW, HIDE, TSHEET, GFXCLS, GET, PUT usw.)
+//                                         -als nächstes Joystick-Abfragen, Scroll des Hintergrundes usw.
+//                                         -Cursorblinken erst mal ausgeschaltet, beim Bewegen in einer Zeile war der Cursor immer schlecht zu sehen
+//                                         -353568 Zeilen/sek.
+//
 //Version 1.9 01.05.2026                   -Umstellung der Token-Suche auf binäre Suche
 //                                         -dadurch wurde die Geschwindigkeit mehr als verdoppelt :-)
 //                                         -Umbau der cmd_print auf Token jetzt auch funktionsfähig.
@@ -101,12 +110,19 @@
 #include <ctype.h>
 #include <string.h>
 #include <malloc.h>
+#include <vector>
+#include <algorithm>
+
+extern unsigned char font8x8[256][8]; 
+
 extern "C" char* sbrk(int incr);        //für Memory-Ausgabe
 
 #include <VGA_t4.h>                     //VGA Anzeige-Treiber
 VGA_T4 vga;
 #include <JPEGDEC.h>                    //JPEG-Decoder
 JPEGDEC jpeg;
+
+#define PSRAM_SIZE (8 * 1024 * 1024) // 8 MB gesamt
 
 #define BUF_SIZE 80
 char inputBuffer[BUF_SIZE];
@@ -124,6 +140,43 @@ const int MAX_R = 480 / 8;                 //Anzahl Textzeilen
 EXTMEM char screenBuffer[MAX_R][MAX_C];      // Bildschirm-Buffer: 30 Zeilen à 40 Zeichen
 EXTMEM uint8_t colorBuffer_F[MAX_R][MAX_C];  // Speichert die Vordergrundfarbe (8-Bit VGA)
 EXTMEM uint8_t colorBuffer_H[MAX_R][MAX_C];  // Speichert die Hintergrundfarbe (8-Bit VGA)
+bool gfx_mode_active = false;                //Umschalter für Pseudografikzeichen
+
+EXTMEM unsigned char tileLibrary[256 * 256];
+EXTMEM unsigned char SpriteLibrary[256 * 256];
+
+uint32_t spritePtr = 0; // Aktueller Schreibzeiger im Grafik-Pool
+struct SpriteRecord {
+  uint32_t startIdx;
+  uint16_t w;
+  uint16_t h;
+  bool active = false;
+};
+
+// Konfiguration für 16x16 Tiles (640x480)
+#define TILES_W 16
+#define TILES_H 16
+#define TILES_COLS 40
+#define TILES_ROWS 30
+
+// PSRAM Speicher (für eine sehr lange Map)
+EXTMEM unsigned char tilemapL0[30 * 1200]; // 1200 Spalten breit
+unsigned char* mapPtrL0 = tilemapL0;       // Der aktuelle "Lese-Kopf"
+int currentHScroll0 = 0;                   // Aktuelle Pixel-Position
+int lastHitX = 0;
+int lastHitY = 0;
+
+struct TileAnim {
+  int target;  // Das Tile in der Map
+  int source;  // Start-Index im Tilesheet
+  int frames;  // Anzahl der Bilder
+  bool active = false;
+};
+
+TileAnim animList[10]; // Max. 10 verschiedene Animationen gleichzeitig
+int animCounter = 0;
+
+
 bool cursor_on_off = true;
 #define BLUE       11
 #define LIGHT_BLUE 83
@@ -150,7 +203,16 @@ bool tron_marker = false;                   // TRON/TROFF - Marker
 #include <SPI.h>
 #include <SD.h>
 File myFile;                                // Globale Variable für das Dateiobjekt
+struct FileEntry {
+  String name;
+  uint32_t size;
+  bool isDir;
+  DateTimeFields dt;
 
+  // Konstruktor hinzufügen (löst den push_back Fehler)
+  FileEntry(String n, uint32_t s, bool d, DateTimeFields t)
+    : name(n), size(s), isDir(d), dt(t) {}
+};
 const int chipSelect = BUILTIN_SDCARD;      // Für Teensy 4.1/4.0/3.6 Onboard-SD-Slot:
 
 #include "USBHost_t36.h"                    //USB-Keyboard-treiber
@@ -160,6 +222,20 @@ USBHIDParser hid1(myusb);                   // Der "Dolmetscher" für moderne Ta
 KeyboardController keyboard1(myusb);
 
 volatile int lastUsbChar = -1;              //Merker für die letzte gedrückte Taste
+
+// Timing-Konstanten
+const int REPEAT_DELAY = 500;  // Millisekunden bis zur ersten Wiederholung
+const int REPEAT_RATE = 50;   // Geschwindigkeit der Wiederholung danach
+
+// Zustandsvariablen
+uint8_t currentKey = 0;        // Die aktuell gehaltene Taste
+uint8_t currentMod = 0;        // Shift, Ctrl, etc.
+elapsedMillis repeatTimer;     // Interner Timer
+bool repeatPhase = false;     // Ob wir bereits in der Wiederholungsphase sind
+// Globale Variablen für das Gedächtnis des Repeat-Systems
+int lastRepeatUnicode = 0;    // Speichert den Buchstaben (z.B. 'A' oder 65)
+uint8_t lastRepeatMod = 0;    // Speichert Shift/AltGr Zustand
+uint8_t lastRepeatKeycode = 0;// Speichert die physische Taste (z.B. 40 für Enter)
 
 // ASCII Characters
 #define CR  '\r'
@@ -436,6 +512,22 @@ enum {
   TOKEN_USING,            //60
   TOKEN_SID,       //letzter Basic-Befehl
   TOKEN_POS,
+  TOKEN_PAINT,
+  TOKEN_GET,
+  TOKEN_PUT,
+  TOKEN_UPDATE,
+  TOKEN_HIDE,
+  TOKEN_GFXCLS,
+  TOKEN_SPLOAD,
+  TOKEN_TDRAW,
+  TOKEN_SPRITE,
+  TOKEN_TSHEET,
+  TOKEN_SCROLL,
+  TOKEN_MAPLOAD,
+  TOKEN_SETSCROLL,
+  TOKEN_PTILE,
+  TOKEN_ANIMATE,
+  TOKEN_SETCHAR,
   TOKEN_RND,       //erster Funktions-Befehl
   TOKEN_SQR,
   TOKEN_SIN,
@@ -476,6 +568,8 @@ enum {
   TOKEN_LOG,
   TOKEN_LN,               //100
   TOKEN_TAN,              //letzter Funktions-Befehl
+  TOKEN_GTILE,
+  TOKEN_ITEM,
   TOKEN_END
 };
 
@@ -486,6 +580,7 @@ struct Keyword {
 
 Keyword commands[] = {
   {"AND", TOKEN_AND},
+  {"ANIMATE", TOKEN_ANIMATE},
   {"AT", TOKEN_AT},
   {"CIRC", TOKEN_CIRC},
   {"CLS", TOKEN_CLS},
@@ -504,24 +599,31 @@ Keyword commands[] = {
   {"END", TOKEN_STOP},
   {"FILES", TOKEN_FILES},
   {"FOR", TOKEN_FOR},
+  {"GET", TOKEN_GET},
+  {"GFXCLS", TOKEN_GFXCLS},
   {"GOSUB", TOKEN_GOSUB},
   {"GOTO", TOKEN_GOTO},
+  {"HIDE", TOKEN_HIDE},
   {"IF", TOKEN_IF},
   {"INPUT", TOKEN_INPUT},
   {"LINE", TOKEN_LINE},
   {"LIST", TOKEN_LIST},
   {"LOAD", TOKEN_LOAD},
+  {"MAPLOAD", TOKEN_MAPLOAD},
   {"MEM", TOKEN_MEM},
   {"NEW", TOKEN_NEW},
   {"NEXT", TOKEN_NEXT},
   {"ON", TOKEN_ON},
   {"OR", TOKEN_OR},
+  {"PAINT", TOKEN_PAINT},
   {"PAUSE", TOKEN_PAUSE},
   {"PEN", TOKEN_PEN},
   {"PIC", TOKEN_PIC},
   {"POS", TOKEN_POS},
   {"PRINT", TOKEN_PRINT},
   {"PSET", TOKEN_PSET},
+  {"PTILE", TOKEN_PTILE},
+  {"PUT", TOKEN_PUT},
   {"READ", TOKEN_READ},
   {"RECT", TOKEN_RECT},
   {"REM", TOKEN_REM},
@@ -531,14 +633,22 @@ Keyword commands[] = {
   {"RETURN", TOKEN_RETURN},
   {"RUN", TOKEN_RUN},
   {"SAVE", TOKEN_SAVE},
+  {"SCROLL", TOKEN_SCROLL},
+  {"SETCHAR", TOKEN_SETCHAR},
+  {"SETSCROLL", TOKEN_SETSCROLL},
   {"SID", TOKEN_SID},
+  {"SPLOAD", TOKEN_SPLOAD},
+  {"SPRITE", TOKEN_SPRITE},
   {"STEP", TOKEN_STEP},
   {"STIME", TOKEN_STIME},
   {"TAB", TOKEN_TAB},
+  {"TDRAW", TOKEN_TDRAW},
   {"THEN", TOKEN_THEN},
   {"TO", TOKEN_TO},
   {"TROFF", TOKEN_TROFF},
   {"TRON", TOKEN_TRON},
+  {"TSHEET", TOKEN_TSHEET},
+  {"UPDATE", TOKEN_UPDATE},
   {"USING", TOKEN_USING},
   {"VARS", TOKEN_VARS},
   {"WEND", TOKEN_WEND},
@@ -561,10 +671,12 @@ Keyword functions[] = {
   {"FN", TOKEN_FN},
   {"FRE", TOKEN_FRE},
   {"GPX", TOKEN_GPX},
+  {"GTILE", TOKEN_GTILE},
   {"GTIME", TOKEN_GTIME},
   {"HEX", TOKEN_HEX},
   {"INKEY", TOKEN_INKEY},
   {"INT", TOKEN_INT},
+  {"ITEM", TOKEN_ITEM},
   {"LEFT$", TOKEN_LEFT},
   {"LEN", TOKEN_LEN},
   {"LN", TOKEN_LN},
@@ -594,15 +706,12 @@ Keyword functions[] = {
 // Berechnet die Anzahl der Einträge (ohne den NULL-Eintrag am Ende)
 const int numCommands = (sizeof(commands) / sizeof(Keyword)) - 1;
 const int numFunctions = (sizeof(functions) / sizeof(Keyword)) - 1;
-
 #define MAX_LINES 1650
 #define LINE_LEN 80
-
 struct BasicLine {
   int number;                                                                           // Die Zeilennummer (z.B. 10)
   char text[LINE_LEN];                                                                  // Der eigentliche Befehlstext
 };
-
 EXTMEM BasicLine program[MAX_LINES];
 int lineCount = 0;                                                                      // Wie viele Zeilen aktuell im Speicher sind
 
@@ -628,13 +737,13 @@ void fbcolor(uint8_t vgaVal, bool vh) {
 void cmd_color() {
   uint8_t v, h;
   spaces();
-  v = expression();
+  v = get_value();
   if (v > 255) v = 255;
   fbcolor(v, 0);
   spaces();
   if (*txtpos == ',') {
     txtpos++;
-    h = expression();
+    h = get_value();
     if (h > 255) h = 255;
     fbcolor(h, 1);
   }
@@ -746,7 +855,7 @@ static void outchar(char c) {
   int y_min, y_max;
 
   if (currentWinIdx == 0) {
-    x_min = 0; y_min = 0; x_max = MAX_C; y_max = MAX_R - 1;
+    x_min = 0; y_min = 0; x_max = MAX_C - 1; y_max = MAX_R - 1;
   } else {
     x_min = windows[currentWinIdx].x + 1;
     y_min = windows[currentWinIdx].y + 1;
@@ -1027,12 +1136,13 @@ static int inchar() {
 
   while (1) {
     myusb.Task();
+    handleRepeat();    // 2. Prüfen, ob eine Taste wiederholt werden muss
     if (cursor_on_off) {
-      if (millis() - lastBlink > 250) {
-        cursor_state = !cursor_state;
-        drawCursor(cursor_state);
-        lastBlink = millis();
-      }
+      //if (millis() - lastBlink > 250) {
+      //  cursor_state = !cursor_state;
+      drawCursor(cursor_state);
+      //  lastBlink = millis();
+      //}
     }
     if (lastUsbChar != -1) {
       int c = lastUsbChar;
@@ -1253,11 +1363,11 @@ void cmd_list() {
     return;
   }
 
-  int startline = (int)expression();
+  int startline = (int)get_value();
   int endline = 65535;
   if (*txtpos == ',') {
     txtpos++;
-    endline = (int)expression();
+    endline = (int)get_value();
   }
 
   for (int i = 0; i < lineCount; i++) {
@@ -1325,7 +1435,7 @@ double func_fn() {
   if (*txtpos == '(') {
     txtpos++;
     while (*txtpos != ')' && *txtpos != '\0' && argCount < 4) {
-      argValues[argCount++] = expression();
+      argValues[argCount++] = get_value();
       spaces();
       if (*txtpos == ',') txtpos++;
       spaces();
@@ -1347,7 +1457,7 @@ double func_fn() {
 
   // 3. FORMEL AUSWERTEN
   txtpos = function[idx].formula;
-  double result = expression();
+  double result = get_value();
 
   // 4. WIEDERHERSTELLUNG
 
@@ -1437,9 +1547,14 @@ double factor() {
   // 1. Einfache Klammer (ohne Funktion davor)
   if (*txtpos == '(') {
     txtpos++;
-    double res = expression();
+    double res = get_value();
     if (*txtpos == ')') txtpos++;
     return res;
+  }
+
+  if (*txtpos == '-') {                       //Neu hinzugefügt
+    txtpos++;
+    return -factor();
   }
 
   // 1.5 Direkte Prüfung auf Zahlen (inkl. Scientific Notation wie 1E+38)
@@ -1482,43 +1597,43 @@ double factor() {
 
       case TOKEN_MAP: {
           if (Test_char('(')) return 0;
-          double val    = expression(); // Wert, der skaliert werden soll
+          double val    = get_value(); // Wert, der skaliert werden soll
           if (Test_char(',')) return 0;
-          double inMin  = expression(); // Quell-Untergrenze
+          double inMin  = get_value(); // Quell-Untergrenze
           if (Test_char(',')) return 0;
-          double inMax  = expression(); // Quell-Obergrenze
+          double inMax  = get_value(); // Quell-Obergrenze
           if (Test_char(',')) return 0;
-          double outMin = expression(); // Ziel-Untergrenze
+          double outMin = get_value(); // Ziel-Untergrenze
           if (Test_char(',')) return 0;
-          double outMax = expression(); // Ziel-Obergrenze
+          double outMax = get_value(); // Ziel-Obergrenze
           if (Test_char(')')) return 0;
 
           return mapDouble(val, inMin, inMax, outMin, outMax);
         }
       case TOKEN_CONSTRAIN: {
           if (Test_char('(')) return 0;
-          double val = expression();     // Der zu prüfende Wert
+          double val = get_value();     // Der zu prüfende Wert
           if (Test_char(',')) return 0;
-          double minLimit = expression(); // Untergrenze
+          double minLimit = get_value(); // Untergrenze
           if (Test_char(',')) return 0;
-          double maxLimit = expression(); // Obergrenze
+          double maxLimit = get_value(); // Obergrenze
           if (Test_char(')')) return 0;
           return constrainDouble(val, minLimit, maxLimit);
         }
       case TOKEN_MAX: {
           if (Test_char('(')) return 0;
-          double v1 = expression();
+          double v1 = get_value();
           if (Test_char(',')) return 0;
-          double v2 = expression();
+          double v2 = get_value();
           if (Test_char(')')) return 0;
           return (v1 > v2) ? v1 : v2;
         }
 
       case TOKEN_MIN: {
           if (Test_char('(')) return 0;
-          double v1 = expression();
+          double v1 = get_value();
           if (Test_char(',')) return 0;
-          double v2 = expression();
+          double v2 = get_value();
           if (Test_char(')')) return 0;
           return (v1 < v2) ? v1 : v2;
         }
@@ -1576,7 +1691,7 @@ double factor() {
           spaces();
           if (*txtpos == '(') {
             txtpos++; // Öffnende Klammer (
-            int i = expression();
+            int i = get_value();
             double res = get_mem(i);
             spaces();
             if (*txtpos == ')') txtpos++; // Schließende Klammer )
@@ -1589,11 +1704,35 @@ double factor() {
         spaces();
         if (*txtpos == '(') {
           txtpos++; // Öffnende Klammer (
-          int x = expression();
+          int x = get_value();
           if (*txtpos == ',') txtpos++;
-          int y = expression();
+          int y = get_value();
           if (*txtpos == ')') txtpos++;
           return vga.getPixel(x, y);
+        }
+      case TOKEN_GTILE:
+        spaces();
+        if (*txtpos == '(') {
+          txtpos++;
+          int px = (int)get_value();
+          if (Test_char(',')) return;
+          int py = (int)get_value();
+          if (Test_char(')')) return;
+          return get_tile_at_pixel(px, py);
+        }
+      case TOKEN_ITEM:
+        spaces();
+        if (*txtpos == '(') {
+          txtpos++;
+          int px = (int)get_value();
+          if (Test_char(',')) return;
+          int py = (int)get_value();
+          if (Test_char(',')) return;
+          int it = (int)get_value();
+          if (Test_char(',')) return;
+          int m = (int)get_value();
+          if (Test_char(')')) return;
+          return cmd_item(px, py, it, m);
         }
 
       // Gruppe der mathematischen Funktionen
@@ -1604,7 +1743,7 @@ double factor() {
       case TOKEN_TAN:
         spaces();
         if (*txtpos == '(') txtpos++;
-        arg = expression();
+        arg = get_value();
         if (*txtpos == ')') txtpos++;
 
         switch (t) {
@@ -1663,6 +1802,184 @@ double factor() {
 }
 
 
+
+double power() {
+  double val = factor();
+  while (true) {
+    spaces();
+    if (*txtpos == '^') { txtpos++; val = pow(val, power()); }
+    else return val;
+  }
+}
+
+// 3. Punktrechnung: *, /, %
+double term() {
+  double val = power();
+  while (true) {
+    spaces();
+    if (*txtpos == '*') { txtpos++; val *= power(); }
+    else if (*txtpos == '/') {
+      txtpos++;
+      double divisor = power();
+      if (divisor != 0) val /= divisor;
+      else syntaxerror(zeroerror);
+    } else if (*txtpos == '%') {
+      txtpos++;
+      double divisor = power();
+      if (divisor != 0) val = fmod(val, divisor);
+      else syntaxerror(zeroerror);
+    } else return val;
+  }
+}
+
+// 4. Strichrechnung: +, -
+double expression() {
+  double val = term();
+  while (true) {
+    spaces();
+    if (*txtpos == '+') { txtpos++; val += term(); }
+    else if (*txtpos == '-') { txtpos++; val -= term(); }
+    else return val;
+  }
+}
+
+// 5. Bitweise Operatoren: &, |, # (Wir nutzen # für XOR, da ^ schon Power ist)
+double bitwise() {
+  double val = expression();
+  while (true) {
+    spaces();
+    if (*txtpos == '&') { txtpos++; val = (double)((long)val & (long)expression()); }
+    else if (*txtpos == '|') { txtpos++; val = (double)((long)val | (long)expression()); }
+    else if (*txtpos == '#') { txtpos++; val = (double)((long)val ^ (long)expression()); }
+    else return val;
+  }
+}
+
+
+// 6. Vergleiche: Jetzt korrekt als double
+double relation() {
+  spaces();
+  double left = bitwise();
+  if (*txtpos == '<' || *txtpos == '>' || *txtpos == '=') {
+    char op1 = *txtpos++;
+    char op2 = (*txtpos == '=' || *txtpos == '>') ? *txtpos++ : '\0';
+    double right = bitwise(); 
+    
+    if (op1 == '=') return (left == right) ? 1.0 : 0.0;
+    if (op1 == '<') {
+      if (op2 == '>') return (left != right) ? 1.0 : 0.0;
+      if (op2 == '=') return (left <= right) ? 1.0 : 0.0;
+      return (left < right) ? 1.0 : 0.0;
+    }
+    if (op1 == '>') {
+      if (op2 == '=') return (left >= right) ? 1.0 : 0.0;
+      return (left > right) ? 1.0 : 0.0;
+    }
+  }
+  return left; // GANZ WICHTIG: Reicht den echten Wert (z.B. 10) nach oben!
+}
+
+/*
+// 6. Vergleiche: =, <, >, <=, >=, <>
+double relation() {
+  spaces();
+  double left = bitwise();
+  if (*txtpos == '<' || *txtpos == '>' || *txtpos == '=') {
+    char op1 = *txtpos++;
+    char op2 = (*txtpos == '=' || *txtpos == '>') ? *txtpos++ : '\0';
+    double right = bitwise(); // Vergleicht Bit-Ergebnisse
+    if (op1 == '=') return left == right;
+    if (op1 == '<') {
+      if (op2 == '>') return left != right;
+      if (op2 == '=') return left <= right;
+      return left < right;
+    }
+    if (op1 == '>') {
+      if (op2 == '=') return left >= right;
+      return left > right;
+    }
+  }
+  return (left != 0);
+}
+*/
+
+// 7. Logische Verknüpfung: AND (jetzt mit double)
+double logical_and() {
+  double result = relation();
+  while (true) {
+    spaces();
+    char *beforeToken = txtpos;
+    if (getCommandToken() == TOKEN_AND) {
+      double right = relation();
+      result = (result != 0 && right != 0) ? 1.0 : 0.0;
+    } else {
+      txtpos = beforeToken;
+      return result;
+    }
+  }
+}
+
+/*
+// 7. Logische Verknüpfung: AND
+bool logical_and() {
+  bool result = relation();
+  while (true) {
+    spaces();
+    char *beforeToken = txtpos;
+    if (getCommandToken() == TOKEN_AND) result = (int)result && (int)relation();
+    else { txtpos = beforeToken; return result; }
+  }
+}
+*/
+// 8. Logische Verknüpfung: OR (jetzt mit double)
+double logical_expression() {
+  double result = logical_and();
+  while (true) {
+    spaces();
+    char *beforeToken = txtpos;
+    if (getCommandToken() == TOKEN_OR) {
+      double right = logical_and();
+      result = (result != 0 || right != 0) ? 1.0 : 0.0;
+    } else {
+      txtpos = beforeToken;
+      return result;
+    }
+  }
+}
+
+
+/*
+// 8. Ganz oben: Logische Verknüpfung: OR
+bool logical_expression() {
+  bool result = logical_and();
+  while (true) {
+    spaces();
+    char *beforeToken = txtpos;
+    if (getCommandToken() == TOKEN_OR) result = result || logical_and();
+    else { txtpos = beforeToken; return result; }
+  }
+}
+*/
+
+double get_value() {
+    // Reicht das Ergebnis einfach durch. 
+    // Ist es eine Rechnung, kommt die Zahl (z.B. 10).
+    // Ist es ein Vergleich, kommt 1.0 oder 0.0.
+    return logical_expression();
+}
+/*
+double get_value() {
+    // Ruft die oberste Ebene auf (OR -> AND -> Vergleiche -> Bitwise -> Mathe)
+    if (logical_expression()) {
+        // Falls das Ergebnis ein logisches TRUE ist (z.B. bei "1 < 2"),
+        // geben wir 1.0 zurück.
+        return 1.0;
+    }
+    // Falls das Ergebnis FALSE ist oder eine "0" aus der Mathe-Ebene:
+    return 0.0;
+}
+*/
+/*
 double power() {                                    //untere Ebene Power
   double val = factor();
   while (true) {
@@ -1722,11 +2039,26 @@ double expression() {                             //Oberste Ebene: Addition und 
   }
 }
 
+double bitwise() {
+    double val = term(); // Zuerst Punktrechnung (*, /, %)
+    while (true) {
+        spaces();
+        if (*txtpos == '&') {
+            txtpos++;
+            // Umwandeln in Ganzzahlen für bitweise Operation
+            long v1 = (long)val;
+            long v2 = (long)term();
+            val = (double)(v1 & v2);
+        } else {
+            return val;
+        }
+    }
+}
 
 bool relation() {
   spaces();
-  double left = expression();
-
+  double left = bitwise();
+  
   if (*txtpos == '<' || *txtpos == '>' || *txtpos == '=') {
 
     char op1 = *txtpos++;
@@ -1736,7 +2068,7 @@ bool relation() {
       op2 = *txtpos++;
     }
 
-    double right = expression();
+    double right = get_value();
 
     if (op1 == '=') return left == right;
     if (op1 == '<') {
@@ -1790,7 +2122,7 @@ bool logical_and() {                            // Verarbeitet AND (höhere Prio
     }
   }
 }
-
+*/
 //############################################################ VARS ######################################################################
 String getVarName(int i, int j) {
   String name = "";
@@ -1891,9 +2223,9 @@ void cmd_print() {
       spaces();
       if (*txtpos == '(') {
         txtpos++;
-        int newX = (int)expression();
+        int newX = (int)get_value();
         if (*txtpos == ',') txtpos++;
-        int newY = (int)expression();
+        int newY = (int)get_value();
         if (*txtpos == ')') txtpos++;
 
         if (newX >= 0 && newX < MAX_C) x_pos = newX;
@@ -1909,7 +2241,7 @@ void cmd_print() {
       spaces();
       if (*txtpos == '(') {
         txtpos++;
-        int newX = (int)expression();
+        int newX = (int)get_value();
         if (*txtpos == ')') txtpos++;
         if (newX >= 0 && newX < MAX_C) x_pos = newX;
         newline = false;
@@ -1944,7 +2276,7 @@ void cmd_print() {
       print(parseStringExpression());
       newline = true;
     } else {                          // --- 2. NUMERISCHE AUSDRÜCKE (inkl. HEX/BIN/OCT) ---
-      double val = expression();
+      double val = get_value();
 
       if (printMode == 16) {
         print("H");
@@ -2037,6 +2369,8 @@ void clearAll() {
   isError = false;
   resetWindows();
 
+  currentHScroll0 = 0;
+  animCounter = 0;
 }
 //############################################################ NEW ######################################################################
 
@@ -2186,7 +2520,7 @@ void cmd_read() {
     if (isStr) {
       sVal = parseStringExpression();
     } else {
-      val = expression();
+      val = get_value();
     }
 
     dataPtr = txtpos; // DATA-Pointer aktualisieren
@@ -2195,10 +2529,10 @@ void cmd_read() {
     spaces();
     if (*txtpos == '(') {
       txtpos++; // '(' überspringen
-      int x = (int)expression(); if (*txtpos == ',') txtpos++;
-      int y = (int)expression();
+      int x = (int)get_value(); if (*txtpos == ',') txtpos++;
+      int y = (int)get_value();
       if (*txtpos == ',') txtpos++;
-      int z = (int)expression(); if (*txtpos == ')') txtpos++;
+      int z = (int)get_value(); if (*txtpos == ')') txtpos++;
 
       int i = findArray(targetV1, targetV2, isStr);
       if (i != -1) {
@@ -2253,7 +2587,7 @@ void cmd_restore() {
 
   // Prüfen, ob eine Zeilennummer folgt (Ziffer oder Ausdruck)
   if (isdigit(*txtpos)) {
-    int targetLineNum = (int)expression();
+    int targetLineNum = (int)get_value();
     bool found = false;
 
     // Suche nach der Zeile mit dieser Nummer im Programm-Array
@@ -2301,7 +2635,7 @@ String parseStringExpression() {
       case TOKEN_SPC: {
           if (*txtpos == '(') {
             txtpos++;
-            int n = (int)expression();
+            int n = (int)get_value();
             if (*txtpos == ')') txtpos++;
             res.reserve(n);
             for (int i = 0; i < n; i++) res += ' ';
@@ -2323,11 +2657,11 @@ String parseStringExpression() {
             int p1 = 0, p2 = -1; // p1 = start/n, p2 = len
             if (*txtpos == ',') {
               txtpos++;
-              p1 = (int)expression();
+              p1 = (int)get_value();
             }
             if (t == TOKEN_MID && spaces() == ',') {
               txtpos++;
-              p2 = (int)expression();
+              p2 = (int)get_value();
             }
             if (*txtpos == ')') txtpos++;
 
@@ -2349,7 +2683,7 @@ String parseStringExpression() {
       case TOKEN_CHR: {
           if (*txtpos == '(') {
             txtpos++;
-            double val = expression();
+            double val = get_value();
             if (*txtpos == ')') txtpos++;
             if (t == TOKEN_STR) {
               res = (val == (long)val) ? String((long)val) : String(val, precisionValue);
@@ -2362,7 +2696,7 @@ String parseStringExpression() {
       case TOKEN_STRING: {
           if (*txtpos == '(') {
             txtpos++;
-            double val = expression();
+            double val = get_value();
             if (*txtpos == ',') {
               txtpos++;
               String p2 = parseStringExpression();
@@ -2427,7 +2761,7 @@ String parseStringExpression() {
 
 //############################################################ GOSUB ######################################################################
 void cmd_on() {
-  int index = (int)expression();
+  int index = (int)get_value();
   int jumpToken = getCommandToken();
   if (jumpToken != TOKEN_GOTO && jumpToken != TOKEN_GOSUB) {
     syntaxerror(valmsg);
@@ -2440,7 +2774,7 @@ void cmd_on() {
 
   while (true) {
     spaces();
-    int targetLine = (int)expression();
+    int targetLine = (int)get_value();
 
     if (currentIdx == index) {
       if (jumpToken == TOKEN_GOSUB) {
@@ -2531,6 +2865,13 @@ void cmd_return() {
 
 
 //############################################################ DIR/FILES ######################################################################
+bool compareFiles(const FileEntry& a, const FileEntry& b) {
+  if (a.isDir != b.isDir) return a.isDir > b.isDir;
+  String an = a.name; an.toUpperCase();
+  String bn = b.name; bn.toUpperCase();
+  return an < bn;
+}
+
 void cmd_files() {
   int zeilen = 0;
   spaces();
@@ -2543,20 +2884,14 @@ void cmd_files() {
     filter.toUpperCase();
   }
 
+  std::vector<FileEntry> fileList;
   File root = SD.open("/");
   if (!root) {
     syntaxerror(sderrormsg);
     return;
   }
-  int fileCount = 0;
-  uint64_t totalFilesSize = 0;
 
-  println("Files on SD-Card:");
-  if (filter != "") {
-    print(" (Filter: *"); print(filter); println("*)");
-  }
-  println("----------------------------------------");
-
+  // 1. Dateien sammeln
   while (true) {
     File entry = root.openNextFile();
     if (!entry) break;
@@ -2566,79 +2901,85 @@ void cmd_files() {
     fileNameUpper.toUpperCase();
 
     if (filter == "" || fileNameUpper.indexOf(filter) != -1) {
-      fileCount++;
-      totalFilesSize += entry.size();
-
-      // 1. DATEINAME (Spalte 1, Breite z.B. 15 Zeichen)
-      print(" ");
-      if (fileNameUpper.indexOf(".BAS") != -1) fbcolor(CYAN, 0);
-      else if (fileNameUpper.indexOf(".BIN") != -1) fbcolor(GREEN, 0);
-      else if (fileNameUpper.indexOf(".BMP") != -1 || fileNameUpper.indexOf(".JPG") != -1) fbcolor(RED, 0);
-      else if (entry.isDirectory()) fbcolor(YELLOW, 0);
-
-      // --- DATEINAME KÜRZEN (NEU) ---
-      String displayPrev = fileName;
-      if (entry.isDirectory()) displayPrev += "/";
-
-      // Wenn der Name länger als 17 Zeichen ist, kürzen wir ihn
-      if (displayPrev.length() > 17) {
-        displayPrev = displayPrev.substring(0, 14) + "...";
-      }
-
-      print(displayPrev);
-
-      // Auffüllen bis Spalte 18 (NEU: displayPrev nutzen)
-      int pad = 18 - displayPrev.length();
-      for (int i = 0; i < pad; i++) print(" ");
-
-      fbcolor(WHITE, 0);
-
-      // 2. GRÖSSE (Spalte 2, Breite 9 Zeichen)
-      if (entry.isDirectory()) {
-        fbcolor(YELLOW, 0);
-        print("<DIR>    ");
-        fbcolor(WHITE, 0);
-      } else {
-        String sSize = String((unsigned long)entry.size());
-        print(sSize);
-        for (int i = 0; i < (9 - sSize.length()); i++) print(" ");
-      }
-
-      // 3. DATUM (Spalte 3)
       DateTimeFields tm;
-      if (entry.getModifyTime(tm)) {
-        if (tm.mday < 10) print("0"); print(tm.mday); print(".");
-        if (tm.mon + 1 < 10) print("0"); print(tm.mon + 1); print(".");
-        print(tm.year + 1900);
-      }
-      println();
-
-      zeilen++;
-
-      int limit = (currentWinIdx == 0) ? MAX_R - 10 : windows[currentWinIdx].h - 4;       // Paging angepasst an Fensterhöhe
-      if (zeilen >= limit) {
-        print("-- Press Key --");
-        if (wait_key(1) == 27) {
-          entry.close();
-          break;
-        }
-        zeilen = 0;
-      }
+      entry.getModifyTime(tm);
+      fileList.emplace_back(fileName, (uint32_t)entry.size(), entry.isDirectory(), tm);
     }
     entry.close();
   }
   root.close();
 
+  // 2. Sortieren
+  std::sort(fileList.begin(), fileList.end(), compareFiles);
+
+  // 3. Header ausgeben
+  println("Files on SD-Card:");
+  if (filter != "") {
+    print(" (Filter: *"); print(filter); println("*)");
+  }
   println("----------------------------------------");
-  print(fileCount); println(" Files found.");
+
+  // 4. Sortierte Liste ausgeben
+  for (const auto& f : fileList) {
+    print(" ");
+
+    // Farbwahl
+    String nUpper = f.name; nUpper.toUpperCase();
+    if (nUpper.endsWith(".BAS")) fbcolor(CYAN, 0);
+    else if (nUpper.endsWith(".BIN")) fbcolor(GREEN, 0);
+    else if (nUpper.endsWith(".BMP") || nUpper.endsWith(".JPG")) fbcolor(RED, 0);
+    else if (f.isDir) fbcolor(YELLOW, 0);
+
+    // Name kürzen
+    String display = f.name;
+    if (f.isDir) display += "/";
+    if (display.length() > 16) display = display.substring(0, 14) + "...";
+
+    print(display);
+    for (int i = 0; i < (17 - display.length()); i++) print(" ");
+    fbcolor(WHITE, 0);
+
+    // Größe RECHTSBÜNDIG (9 Stellen)
+    if (f.isDir) {
+      fbcolor(YELLOW, 0);
+      print("    <DIR>");
+      fbcolor(WHITE, 0);
+    } else {
+      String sSize = String(f.size);
+      // Führende Leerzeichen für Rechtsbündigkeit
+      for (int i = 0; i < (9 - sSize.length()); i++) print(" ");
+      print(sSize);
+    }
+
+    // Datum
+    print("  ");
+    if (f.dt.mday < 10) print("0"); print(f.dt.mday); print(".");
+    if (f.dt.mon + 1 < 10) print("0"); print(f.dt.mon + 1); print(".");
+    print(f.dt.year + 1900);
+    println();
+
+    zeilen++;
+
+    // Paging
+    int limit = (currentWinIdx == 0) ? MAX_R - 10 : windows[currentWinIdx].h - 4;
+    if (zeilen >= limit) {
+      print("-- Press Key --");
+      if (wait_key(1) == 27) break;
+      zeilen = 0;
+      // Kurzes Löschen der "Press Key" Zeile könnte man hier noch einfügen
+    }
+  }
+
+  println("---------------------------------------");
+  print((int)fileList.size()); println(" Files found.");
   println();
-  // Statistik
   print("Used : "); printSmartSize(SD.usedSize());
   print("Free : "); printSmartSize(SD.totalSize() - SD.usedSize());
   print("Total: "); printSmartSize(SD.totalSize());
   cursor_on_off = tmp_cur;
   drawCursor(cursor_on_off);
 }
+
 
 // Hilfsfunktion zur schöneren Größenanzeige (B, KB, MB, GB)
 void printSmartSize(uint64_t bytes) {
@@ -2700,7 +3041,8 @@ void cmd_load() {
   }
 
   const char* fileName = fileNameStr.c_str();
-
+  int filetype = getFileTypeID(fileName);
+  if (filetype == 4){                       //4=BAS-Datei
   // 2. Datei auf der SD-Karte des Teensy 4.1 suchen
   if (!SD.exists(fileName)) {
     print("FILE NOT FOUND: ");
@@ -2747,6 +3089,10 @@ void cmd_load() {
   file.close();
   // Wichtig: Nach dem Laden sicherstellen, dass isRunning false ist
   isRunning = false;
+  }
+  else if(filetype == 3){     //3=Font-Datei
+    cmd_loadfont(fileName);
+  }
 }
 
 //############################################################ SAVE ######################################################################
@@ -2761,7 +3107,7 @@ void cmd_save() {
   }
 
   const char* fileName = fileNameStr.c_str();
-
+  int filetype = getFileTypeID(fileName);
   // --- Überschreiben Abfrage mit waitkey ---
   if (SD.exists(fileName)) {
     print("File exists. Overwrite? (y/n): ");
@@ -2776,7 +3122,7 @@ void cmd_save() {
 
     SD.remove(fileName);                                      // Wenn 'y', löschen wir die alte Datei vor dem Neuschreiben
   }
-
+  if(filetype == 4){
   // Ab hier wie gehabt: Datei öffnen und speichern
   File file = SD.open(fileName, FILE_WRITE);
   if (!file) {
@@ -2794,7 +3140,9 @@ void cmd_save() {
     file.println(program[j].text);
   }
   file.close();
-  //musicTimer.begin(musicInterrupt, 20000); // Wieder starten
+  }
+  else if(filetype == 3) cmd_savefont(fileName);
+  
 }
 
 //############################################################ DEL  ########################################################################
@@ -2880,16 +3228,16 @@ String get_string_array_value() {
 
   if (*txtpos == '(') {
     txtpos++; // Überspringe '('
-    int x = (int)expression();
+    int x = (int)get_value();
     int y = 0, z = 0;
 
     if (*txtpos == ',') {
       txtpos++;
-      y = (int)expression();
+      y = (int)get_value();
     }
     if (*txtpos == ',') {
       txtpos++;
-      z = (int)expression();
+      z = (int)get_value();
     }
 
     if (*txtpos == ')') {
@@ -2933,16 +3281,16 @@ double get_array_value_factor() {
 
   if (*txtpos == '(') {
     txtpos++; // Überspringe '('
-    int x = (int)expression();
+    int x = (int)get_value();
     int y = 0, z = 0;
 
     if (*txtpos == ',') {
       txtpos++;
-      y = (int)expression();
+      y = (int)get_value();
     }
     if (*txtpos == ',') {
       txtpos++;
-      z = (int)expression();
+      z = (int)get_value();
     }
 
     if (*txtpos == ')') {
@@ -3028,15 +3376,15 @@ void cmd_dim() {
     }
     txtpos++;
 
-    int d1 = (int)expression();
+    int d1 = (int)get_value();
     int d2 = 0, d3 = 0;
 
     if (*txtpos == ',') {
       txtpos++;
-      d2 = (int)expression();
+      d2 = (int)get_value();
       if (*txtpos == ',') {
         txtpos++;
-        d3 = (int)expression();
+        d3 = (int)get_value();
       }
     }
 
@@ -3102,7 +3450,7 @@ void cmd_assignment() {
     if (sVar) {
       stringVars[targetV1][targetV2] = parseStringExpression();
     } else {
-      variables[targetV1][targetV2] = expression();
+      variables[targetV1][targetV2] = get_value();
     }
     return; // Sofort raus!
   }
@@ -3113,14 +3461,14 @@ void cmd_assignment() {
   if (*txtpos == '(') {
     txtpos++;
 
-    int x = (int)expression();
+    int x = (int)get_value();
     int y = 0, z = 0;
     if (*txtpos == ',') {
       txtpos++;
-      y = (int)expression();
+      y = (int)get_value();
       if (*txtpos == ',') { // Falls 3D: Drittes Komma prüfen
         txtpos++;
-        z = (int)expression();
+        z = (int)get_value();
       }
     }
 
@@ -3153,7 +3501,7 @@ void cmd_assignment() {
       if (sVar) {
         allArrays[i].strData[idx] = parseStringExpression();
       } else {
-        allArrays[i].numData[idx] = expression();
+        allArrays[i].numData[idx] = get_value();
       }
     }
   }
@@ -3163,7 +3511,7 @@ void cmd_assignment() {
     if (sVar) {
       stringVars[targetV1][targetV2] = parseStringExpression();
     } else {
-      variables[targetV1][targetV2] = expression();
+      variables[targetV1][targetV2] = get_value();
     }
   }
   else {
@@ -3254,7 +3602,7 @@ void skip_to(int target1, int target2) {
 void cmd_while() {
   spaces();
   const char* conditionStart = txtpos;                                                          // 1. Position der Bedingung für den Stack merken
-  bool condition = relation();                                                                  // 2. Bedingung auswerten (txtpos wandert hinter die Bedingung)
+  bool condition = get_value();                                                                  // 2. Bedingung auswerten (txtpos wandert hinter die Bedingung)
 
   if (condition) {
     bool alreadyOnStack = false;                                                                // Prüfung bereits in dieser Schleife (Rücksprung von WEND)?
@@ -3311,12 +3659,12 @@ void cmd_wend() {
 //############################################################ DWRITE-Befehl ######################################################################
 void cmd_dwrite() {
   spaces();
-  int pin = (int)expression(); // Pin Nummer (z.B. 13)
+  int pin = (int)get_value(); // Pin Nummer (z.B. 13)
 
   spaces();
   if (*txtpos == ',') {
     txtpos++;
-    int state = (int)expression(); // Status (0 = LOW, 1 = HIGH)
+    int state = (int)get_value(); // Status (0 = LOW, 1 = HIGH)
     pinMode(pin, OUTPUT);
     digitalWrite(pin, state);
 
@@ -3328,7 +3676,7 @@ void cmd_dwrite() {
 //############################################################ Pause-Befehl ######################################################################
 void cmd_pause() {
   spaces();
-  int ms = (int)expression();                                                       // Die Millisekunden einlesen (kann auch eine Rechnung sein, z.B. PAUSE 100*5)
+  int ms = (int)get_value();                                                       // Die Millisekunden einlesen (kann auch eine Rechnung sein, z.B. PAUSE 100*5)
 
   if (ms > 0) {
     if (ms > 100) {
@@ -3407,14 +3755,14 @@ static int Test_char(char az)
 void cmd_settime()
 { int tagzeit[7];
   spaces();
-  tagzeit[0] = abs(int(expression()));         //nur ganze Zahlen
+  tagzeit[0] = abs(int(get_value()));         //nur ganze Zahlen
   for (int i = 1; i < 6; i++)
   {
     if (Test_char(',')) {
       syntaxerror(syntaxmsg);
       return;
     }
-    tagzeit[i] = abs(int(expression()));         //nur ganze Zahlen
+    tagzeit[i] = abs(int(get_value()));         //nur ganze Zahlen
   }
   setTime(tagzeit[0], tagzeit[1], tagzeit[2], tagzeit[3], tagzeit[4], tagzeit[5]);                   //h, mi, s, d, m, y);
   Teensy3Clock.set(now());
@@ -3466,7 +3814,7 @@ void cmd_dump() {
   if (*txtpos == '\0' || *txtpos == '\r' || *txtpos == '\n') {
     offset = 0;
   } else {
-    offset = expression();
+    offset = get_value();
   }
 
   // Validierung: Offset darf maximal 8MB (0x7FFFFF) sein
@@ -3523,7 +3871,7 @@ void cmd_defn() {
 void cmd_pset() {
   spaces();
 
-  int px = (int)expression(); // X-Koordinate parsen
+  int px = (int)get_value(); // X-Koordinate parsen
 
   if (*txtpos == ',') txtpos++;
   else {
@@ -3531,12 +3879,12 @@ void cmd_pset() {
     return;
   }
 
-  int py = (int)expression(); // Y-Koordinate parsen
+  int py = (int)get_value(); // Y-Koordinate parsen
 
   uint8_t col = windows[currentWinIdx].fcolor; // Vordergrundfarbe, falls keine Farbe angegeben wird
   if (*txtpos == ',') {
     txtpos++;
-    col = (uint8_t)expression(); // Farbe parsen (0-255)
+    col = (uint8_t)get_value(); // Farbe parsen (0-255)
   }
   vga.drawPixel(px, py, col);
 }
@@ -3556,7 +3904,8 @@ int getFileTypeID(const char* filename) {
 
   if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return 1;
   if (name.endsWith(".bmp")) return 2;
-
+  if (name.endsWith(".fnt")) return 3;
+  if (name.endsWith(".bas")) return 4;
   return 0; // Unbekannt
 }
 
@@ -3647,7 +3996,7 @@ void drawBMP(const char* filename, int x, int y) {
 Params getParams(int n) {
   Params p;
   for (int i = 0; i < n; i++) {
-    p.val[i] = (int)expression();
+    p.val[i] = (int)get_value();
 
     // Wenn wir noch nicht beim letzten Element sind...
     if (i < n - 1) {
@@ -3753,7 +4102,7 @@ void cmd_win() {
   windows[currentWinIdx].curY = y_pos;
 
   // 3. Fenster-Nummer holen
-  int nr = expression();
+  int nr = get_value();
   if ((nr > 6) || (nr < 1)) syntaxerror(valmsg) ;                     //das Hauptfenster darf nicht umdefiniert werden und es sind maximal 6 Fenster definierbar
   bool isRedefinition = false;                                        //wenn jetzt eine schließende Klammer kommt, dann nur den Rahmen des Fensters neuzeichnen (Inhalt des Fensters bleibt erhalten)
   currentWinIdx = nr;
@@ -3779,11 +4128,11 @@ void cmd_win() {
 
   if (*txtpos == ',') {
     txtpos++;
-    windows[currentWinIdx].tcolor = expression();
+    windows[currentWinIdx].tcolor = get_value();
     if (*txtpos == ',') txtpos++;
-    windows[currentWinIdx].fcolor = expression();
+    windows[currentWinIdx].fcolor = get_value();
     if (*txtpos == ',') txtpos++;
-    windows[currentWinIdx].bcolor = expression();
+    windows[currentWinIdx].bcolor = get_value();
     if (*txtpos == ',') txtpos++;
     static String winTitles[30];
     winTitles[currentWinIdx] = parseStringExpression();
@@ -3834,10 +4183,10 @@ void cmd_renum() {
   int step = 10;                                                                        // Standard-Schrittweite
   //print(txtpos);
   if (*txtpos != NL && *txtpos != ':' && *txtpos != '\0') {
-    nextLine = (int)expression();                                                       // (Startwert)
+    nextLine = (int)get_value();                                                       // (Startwert)
 
     if (!Test_char(',')) {
-      step = (int)expression();                                                         // (Schrittweite)
+      step = (int)get_value();                                                         // (Schrittweite)
     }
   }
 
@@ -3927,17 +4276,544 @@ void processLineJumps(int lineIdx, RenumMap * mapping, int mapSize) {
     }
   }
 }
+//########################################################## POS - Befehl ###############################################################################################
 
 void cmd_pos() {
   spaces();
-  int x = expression();
+  int x = get_value();
   if (Test_char(',')) return;
-  int y = expression();
+  int y = get_value();
   x_pos = x;
   y_pos = y;
 }
+//########################################################## PAINT - Befehl ##############################################################################################
+
+void floodFill(int x, int y, uint16_t fill_color, uint16_t target_color) {
+  if (target_color == fill_color) return;
+
+  // Wir nutzen ein festes Array als Stack, um dynamische Allokation zu vermeiden
+  // 4000 Einträge reichen für Scanline-Fill meist völlig aus
+  static int stackX[4000];
+  static int stackY[4000];
+  int stackPtr = 0;
+
+  stackX[stackPtr] = x;
+  stackY[stackPtr] = y;
+  stackPtr++;
+
+  while (stackPtr > 0) {
+    stackPtr--;
+    int curX = stackX[stackPtr];
+    int curY = stackY[stackPtr];
+
+    int xL = curX;
+    int xR = curX;
+
+    // Suche linke Grenze der Zeile
+    while (xL > 0 && vga.getPixel(xL - 1, curY) == target_color) xL--;
+    // Suche rechte Grenze der Zeile
+    while (xR < 639 && vga.getPixel(xR + 1, curY) == target_color) xR++;
+
+    // Zeile füllen
+    for (int i = xL; i <= xR; i++) {
+      vga.drawPixel(i, curY, fill_color);
+
+      // Obere Zeile prüfen
+      if (curY > 0 && vga.getPixel(i, curY - 1) == target_color) {
+        if (i == xR || vga.getPixel(i + 1, curY - 1) != target_color) {
+          if (stackPtr < 3999) {
+            stackX[stackPtr] = i;
+            stackY[stackPtr] = curY - 1;
+            stackPtr++;
+          }
+        }
+      }
+      // Untere Zeile prüfen
+      if (curY < 479 && vga.getPixel(i, curY + 1) == target_color) {
+        if (i == xR || vga.getPixel(i + 1, curY + 1) != target_color) {
+          if (stackPtr < 3999) {
+            stackX[stackPtr] = i;
+            stackY[stackPtr] = curY + 1;
+            stackPtr++;
+          }
+        }
+      }
+    }
+  }
+}
 
 
+void cmd_paint() {
+  spaces();
+  print(txtpos);
+  int x = (int)get_value();
+  if (*txtpos == ',') {
+    txtpos++;
+    int y = (int)get_value();
+    if (*txtpos == ',') {
+      txtpos++;
+      int color = (int)get_value();
+
+      // Die Farbe an der Startposition bestimmen (target_color)
+      uint16_t start_color = vga.getPixel(x, y);
+
+      // Nur füllen, wenn die Farbe anders ist
+      if (start_color != (uint16_t)color) {
+        floodFill(x, y, (uint16_t)color, start_color);
+      }
+    }
+  }
+}
+//######################################################################################################################################################################
+//########################################################## Grafik_Engine #############################################################################################
+//######################################################################################################################################################################
+
+//########################################################## GET - Befehl ##############################################################################################
+
+void cmd_get() {                                    // Syntax: GET x, y, sNum
+  spaces();
+  int x1 = (int)get_value();
+  if (Test_char(',')) return;
+  int y1 = (int)get_value();
+  if (Test_char(',')) return;
+  int sNum = (int)get_value();
+
+  const int TILE_SIZE = 16;                         //16x16 pixel vom Bildschirm grabben
+  const int totalPixels = TILE_SIZE * TILE_SIZE;
+  static vga_pixel tempTile[totalPixels];
+  int p = 0;
+  for (int y = 0; y < TILE_SIZE; y++) {
+    for (int x = 0; x < TILE_SIZE; x++) {
+      tempTile[p++] = vga.getPixel(x1 + x, y1 + y);
+    }
+  }
+  vga.sprite_data(sNum, tempTile, totalPixels);
+}
+
+//########################################################## SPRITE - Befehl ###########################################################################################
+
+void cmd_set_sprite() {                             // Syntax: SPRITE sprite_id, tile_index
+  spaces();
+  int sId = (int)get_value();
+  if (Test_char(',')) return;
+  int tIdx = (int)get_value();
+
+  if (sId < 0 || sId >= 64) return;
+  if (tIdx < 0 || tIdx >= 256) return;
+
+  // 1. Den Startpunkt im PSRAM berechnen (16x16 = 256 Pixel pro Tile)
+  int startIdx = tIdx * 256;
+  vga.sprite_data((unsigned char)sId, (vga_pixel*)&SpriteLibrary[startIdx], 256);
+
+}
+//########################################################## PUT - Befehl ##############################################################################################
+void cmd_put() {
+  int x = (int)get_value();
+  if (Test_char(',')) return;
+  int y = (int)get_value();
+  if (Test_char(',')) return;
+  int sNum = (int)get_value(); // Der Index der Daten aus sprite_data
+  if (sNum >= 0 && sNum < 64) { // Prüfen gegen nbsprites (z.B. 64)
+    vga.sprite(sNum, x, y, sNum);
+  }
+}
+//########################################################## Update - Befehl ############################################################################################
+
+void cmd_update() {
+  run_tile_animations();
+  vga.run_gfxengine();
+}
+//########################################################## HIDE - Befehl ##############################################################################################
+
+void cmd_hide() {                                   //Syntax HIDE id (Spritenummer)
+  spaces();
+  int spr_id = get_value();
+  vga.sprite_hide(spr_id);
+}
+
+//########################################################## TDRAW - Befehl #########################################################################################
+
+void cmd_tile_draw() {                              //Syntax Tdraw 0,x,y,id   (0 = Hintergrund)
+  int layer = (int)get_value();
+  if (Test_char(',')) return;
+  int x = (int)get_value();
+  if (Test_char(',')) return;
+  int y = (int)get_value();
+  if (Test_char(',')) return;
+  int tileIndex = (int)get_value();
+  vga.tile_draw(layer, x, y, (unsigned char)tileIndex);
+}
+
+//########################################################## SPLOAD - Befehl #########################################################################################
+void load_sprite_to_library(const char* filename, int slot) {
+  if (slot < 0 || slot > 255) return;
+  File bmpFile = SD.open(filename);
+  if (!bmpFile) {
+    println("BMP nicht gefunden!");
+    return;
+  }
+  bmpFile.seek(54);                    //Header überpringen
+  for (int y = 15; y >= 0; y--) {      // BMPs sind "Bottom-Up" gespeichert (letzte Zeile zuerst)
+    for (int x = 0; x < 16; x++) {
+      uint8_t b = bmpFile.read();
+      uint8_t g = bmpFile.read();
+      uint8_t r = bmpFile.read();
+      uint8_t vgaColor = VGA_RGB(r, g, b);//(r & 0xE0) | ((g & 0xE0) >> 3) | (b >> 6);
+      SpriteLibrary[slot * 256 + (y * 16 + x)] = vgaColor;
+    }
+  }
+  bmpFile.close();
+  vga.sprite_data(slot, (vga_pixel*)&SpriteLibrary[slot * 256], 256);
+}
+
+void cmd_sprite_load() {
+  String fname = parseStringExpression();
+  if (Test_char(',')) return;
+  int index = (int)get_value();
+  load_sprite_to_library(fname.c_str(), index);
+}
+
+//########################################################## GFXCLS - Befehl #########################################################################################
+
+void set_background_color_correct(uint8_t vgaColor) {
+  const int tileSize = TILES_W * TILES_H;
+  uint8_t tempTile[tileSize];
+  for (int i = 0; i < tileSize; i++) {
+    tempTile[i] = vgaColor;
+  }
+  vga.tile_data(255, (vga_pixel*)tempTile, tileSize);
+  unsigned char fillRow[TILES_COLS];
+  for (int i = 0; i < TILES_COLS; i++) fillRow[i] = 255;
+
+  for (int r = 0; r < TILES_ROWS; r++) {
+    vga.tile_draw_row(0, 0, r, fillRow, TILES_COLS);
+  }
+}
+
+void cmd_gfx_cls() {
+  int cl = 5;
+  spaces();
+  if (isalnum(*txtpos)) {
+    cl = (int)get_value();
+  }
+  set_background_color_correct(cl);
+}
+//########################################################## TSHEET - Befehl #########################################################################################
+
+void cmd_tsheet() {
+  spaces();
+  String fname = parseStringExpression();
+
+  // Datei auf SD-Karte öffnen
+  File bmpFile = SD.open(fname.c_str());
+  if (!bmpFile) {
+    return;
+  }
+
+  // Header-Check (Breite und Höhe prüfen, Offset 18 und 22)
+  bmpFile.seek(18);
+  uint32_t width, height;
+  bmpFile.read((uint8_t*)&width, 4);
+  bmpFile.read((uint8_t*)&height, 4);
+
+  if (width != 256 || height != 256) {
+    bmpFile.close();
+    return;
+  }
+  bmpFile.seek(54);
+  for (int ty = 15; ty >= 0; ty--) {        // Kachel-Reihe (16 Reihen)
+    for (int py = 15; py >= 0; py--) {      // Pixel-Zeile innerhalb der Kachel (16 Zeilen)
+      for (int tx = 0; tx < 16; tx++) {     // Kachel-Spalte (16 Spalten)
+        int slot = ((15 - ty) * 16) + tx;
+        int startIdx = slot * 256 + (py * 16);
+
+        for (int px = 0; px < 16; px++) {
+          uint8_t b = bmpFile.read();
+          uint8_t g = bmpFile.read();
+          uint8_t r = bmpFile.read();
+
+
+          uint8_t vgaColor = VGA_RGB(r, g, b);
+          tileLibrary[startIdx + px] = vgaColor;
+        }
+      }
+    }
+  }
+  bmpFile.close();
+  for (int i = 0; i < 256; i++) {
+    vga.tile_data(i + 16, (vga_pixel*)&tileLibrary[i * 256], 256);
+  }
+}
+
+//#################################################################################### GTILE ###########################################################################################
+
+int get_tile_raw(int world_x, int world_y) {
+  int tx = world_x >> 4; // Pixel zu Tile-X
+  int ty = world_y >> 4; // Pixel zu Tile-Y
+  if (tx < 0 || tx >= 1000 || ty < 0 || ty >= 30) return 0;
+  return tilemapL0[tx * 30 + ty];
+}
+
+int get_tile_at_pixel(int x, int y) {
+  int w = 16;
+  int h = 16;
+  int wx = x + currentHScroll0;
+
+  // Alle 4 Ecken abfragen
+  int t1 = get_tile_raw(wx,     y);
+  int t2 = get_tile_raw(wx + w - 1, y);
+  int t3 = get_tile_raw(wx,     y + h - 1);
+  int t4 = get_tile_raw(wx + w - 1, y + h - 1);
+
+  int maxTile = t1;
+  if (t2 > maxTile) maxTile = t2;
+  if (t3 > maxTile) maxTile = t3;
+  if (t4 > maxTile) maxTile = t4;
+  return maxTile; // Gibt die Tile-Nummer zurück (0, 1, 2, 3...)
+}
+
+int cmd_item(int x, int y, int tile, int m) {
+  int value;
+  int wx = x + currentHScroll0;
+  int w = 16; int h = 16; // Sprite-Größe
+
+  // Wir prüfen 4 Punkte (Ecken)
+  int pointsX[4] = {wx, wx + w - 1, wx, wx + w - 1};
+  int pointsY[4] = {y, y, y + h - 1, y + h - 1};
+
+  value = 0;
+
+  for (int i = 0; i < 4; i++) {
+    int tx = pointsX[i] >> 4;
+    int ty = pointsY[i] >> 4;
+
+    if (tilemapL0[tx * 30 + ty] == tile) {
+      // GEFUNDEN! Jetzt löschen:
+
+      //------------------ nur löschen, wenn gewünscht ----------------------
+      if (m == 1) {
+        tilemapL0[tx * 30 + ty] = 0; // Im PSRAM löschen
+        // Sofort vom Bildschirm löschen (+16 Offset beachten)
+        int vgaX = tx % 40;
+        unsigned char zeroTile = 0 ;//+ 16;
+        vga.tile_draw_col(0, vgaX, ty, &zeroTile, 1);
+      }
+      //------------------ nur löschen, wenn gewünscht ----------------------
+
+
+      value = 1; // "Erfolg" an BASIC melden
+      break;
+    }
+  }
+  return value;
+}
+//#################################################################################### MAPLOAD ###########################################################################################
+// --- Befehl: Map laden ---
+void load_map(const char* filename) {
+  File f = SD.open(filename, FILE_READ);
+  if (f) {
+    // 1. Gesamte Map ins PSRAM lesen
+    f.read(tilemapL0, sizeof(tilemapL0));
+    f.close();
+
+    currentHScroll0 = 0;
+    for (int i = 0; i < TILES_COLS; i++) {
+      unsigned char* columnData = tilemapL0 + (i * TILES_ROWS);
+      vga.tile_draw_col(0, i, 0, columnData, TILES_ROWS);
+    }
+    mapPtrL0 = tilemapL0 + (TILES_COLS * TILES_ROWS);
+  }
+}
+
+//########################################################## SCROLL - Befehl ##############################################################################################################
+
+// --- Befehl: Das eigentliche Scrolling ---
+// Richtung: +1 für Vorwärts, -1 für Rückwärts
+void scroll_map(int direction) {
+  currentHScroll0 += direction;
+
+  // Überprüfen, ob wir eine neue Tile-Grenze (16 Pixel) überschritten haben
+  if ((currentHScroll0 & 0x0F) == 0) {
+    int tileColIndex = currentHScroll0 / TILES_W;
+    int vgaTargetCol;
+
+    if (direction > 0) {
+      vgaTargetCol = (tileColIndex + (TILES_COLS - 1)) % TILES_COLS;
+      mapPtrL0 = &tilemapL0[(tileColIndex + (TILES_COLS - 1)) * TILES_ROWS];
+    } else {
+      vgaTargetCol = tileColIndex % TILES_COLS;
+      mapPtrL0 = &tilemapL0[tileColIndex * TILES_ROWS];
+    }
+
+    unsigned char tempColumn[TILES_ROWS];
+    for (int i = 0; i < TILES_ROWS; i++) {
+      tempColumn[i] = mapPtrL0[i] + 16;
+    }
+    int mapColToLoad = (tileColIndex + TILES_COLS - 1) ;//% 960; // Springt nach 999 zurück auf 0
+    if (mapColToLoad > 798) {
+      currentHScroll0 = 0;
+      mapColToLoad = 0;
+      mapPtrL0 = 0;
+    }
+    unsigned char* dataPtr = &tilemapL0[mapColToLoad * 30];
+    vga.tile_draw_col(0, vgaTargetCol, 0, dataPtr, TILES_ROWS);
+  }
+
+  // Das pixelgenaue Hardware-Scrolling ausführen
+  vga.hscroll(0, currentHScroll0);
+}
+
+
+void cmd_mapload() {
+  String fn = parseStringExpression();
+  load_map(fn.c_str());
+}
+
+void cmd_scroll() {
+  int dir = (int)get_value(); // z.B. 1 oder -1
+  scroll_map(dir);
+}
+
+void cmd_setscroll() {
+  // Syntax: SETSCROLL layer, row_start, row_end //, mask
+  spaces();
+  int layer = (int)get_value();
+  if (*txtpos == ',') txtpos++;
+  int r_beg = (int)get_value();
+  if (*txtpos == ',') txtpos++;
+  int r_end = (int)get_value();
+  //if (*txtpos==',') txtpos++;
+  //int mask = (int)get_value();
+
+  vga.set_hscroll(layer, r_beg, r_end, 0x0F);//mask);
+}
+//########################################################## MAPSAVE - Befehl #########################################################################################
+/*
+void cmd_save_map() {
+  // Syntax: SAVE_MAP "level1.map"
+  String fname = parseStringExpression();
+
+  File f = SD.open(fname.c_str(), FILE_WRITE);
+  if (f) {
+    // Das gesamte Array (z.B. 30 * 2000 Bytes) auf einmal schreiben
+    f.write(tilemapL0, sizeof(tilemapL0));
+    f.close();
+    Serial.println("Map auf SD gespeichert.");
+  } else {
+    Serial.println("Fehler beim Speichern!");
+  }
+}
+*/
+//########################################################## PTILE - Befehl #########################################################################################
+
+void cmd_poke_tile() {
+  // Syntax: POKE_MAP layer, x, y, tileIndex
+  spaces();
+  //int layer = (int)get_value(); if (*txtpos==',') txtpos++;
+  int x     = (int)get_value(); if (*txtpos == ',') txtpos++;
+  int y     = (int)get_value(); if (*txtpos == ',') txtpos++;
+  int tile  = (int)get_value();
+  tilemapL0[x * 30 + y] = (unsigned char)tile;
+  unsigned char displayTile = (unsigned char)tilemapL0[x * 30 + y];//(unsigned char) tile;
+  vga.tile_draw_col(0, x, y, &displayTile, 1);
+}
+
+//########################################################## ANIMATE - Befehl #########################################################################################
+
+void run_tile_animations() {
+  static unsigned long lastAnim = 0;
+  static int frameTick = 0;
+  if (millis() - lastAnim < 150) return;
+  lastAnim = millis();
+  frameTick++;
+
+  for (int i = 0; i < animCounter; i++) {
+    if (animList[i].active) {
+      int currentFrame = frameTick % animList[i].frames;
+
+      // Bild im PSRAM (tileLibrary)?
+      int srcIdx = animList[i].source + currentFrame;
+
+      // Welches Tile auf dem Schirm soll ersetzt werden? (+16 Offset)
+      int dstIdx = animList[i].target;
+      vga.tile_data(dstIdx, (vga_pixel*)&tileLibrary[srcIdx * 256], 256);
+    }
+  }
+}
+void cmd_animate() {
+  spaces();
+  int t = (int)get_value(); if (*txtpos == ',') txtpos++;
+  int s = (int)get_value(); if (*txtpos == ',') txtpos++;
+  int f = (int)get_value();
+
+  if (animCounter < 10) {
+    animList[animCounter].target = t;
+    animList[animCounter].source = s;
+    animList[animCounter].frames = f;
+    animList[animCounter].active = true;
+    animCounter++;
+  }
+}
+
+//########################################################## SETCHAR - Befehl #########################################################################################
+
+void cmd_setchar() {
+    // Syntax: SETCHAR ascii_code, b1, b2, b3, b4, b5, b6, b7, b8
+    int ascii = (int)get_value(); 
+    if (ascii < 0 || ascii > 255) return;
+
+    for (int i = 0; i < 8; i++) {
+        if (Test_char(',')) return;
+        font8x8[ascii][i] = (unsigned char)get_value();
+    }
+}
+//########################################################## LOADFONT - Befehl #########################################################################################
+
+void cmd_loadfont(String filename) {
+  // Syntax: LOADFONT "myfont.bin"
+  //String fileName = parseStringExpression(); // Holt den Dateinamen aus dem BASIC
+  
+  File fontFile = SD.open(filename.c_str(), FILE_READ);
+  if (fontFile) {
+    // Wir lesen die 2048 Bytes direkt in unser RAM-Array
+    // font8x8 ist dein 'extern' deklariertes Array
+    fontFile.read((uint8_t*)font8x8, 2048);
+    fontFile.close();
+  } else {
+    if (!fontFile) {
+    println(sdfilemsg);
+    return;
+  }
+    // Fehlerbehandlung falls Datei nicht existiert
+  }
+}
+
+
+void cmd_savefont(String filename) {
+  /*
+  // Syntax: SAVEFONT "myfont.bin"
+  String filename = get_string(); 
+  if (SD.exists(filename.c_str())) {
+    print("File exists. Overwrite? (y/n): ");
+    char choice = tolower(wait_key(0));
+    println(String(choice));
+    if (choice != 'y') {
+      println("Save aborted.");
+      return;
+    }
+    SD.remove(filename.c_str());
+  }
+*/
+  File fontFile = SD.open(filename.c_str(), FILE_WRITE);
+  if (fontFile) {
+    // Schreibe den gesamten Font-Speicher (256 Zeichen * 8 Bytes)
+    fontFile.write((uint8_t*)font8x8, 2048);
+    fontFile.close();
+    //Serial.println("Font erfolgreich gespeichert.");
+  } else {
+    syntaxerror(sdfilemsg);
+  }
+}
 //#################################################################################### Hauptprogrammschleife ###########################################################################################
 void Basic_interpreter() {
   int lineNumber;
@@ -3945,7 +4821,8 @@ void Basic_interpreter() {
 
 
   while (1) {
-    myusb.Task();
+    myusb.Task();      //hier offensichtlih nicht nötig, weil getln über editline die Tastatur abfragt
+    handleRepeat();    // 2. Prüfen, ob eine Taste wiederholt werden muss
 
     if (!isRunning) {                                      // --- 1. Direktmodus ---
       isError = false;
@@ -3976,11 +4853,11 @@ void Basic_interpreter() {
 
       jumped = false;
       myusb.Task();
-
+      handleRepeat();    // 2. Prüfen, ob eine Taste wiederholt werden muss
       if (break_marker) {
         line_terminator();
-        if(isRunning) {
-          printmsg(breakmsg,0);
+        if (isRunning) {
+          printmsg(breakmsg, 0);
           println(program[currentLineIndex].number);           //Zeilennummer ausgeben
         }
         currentLineIndex = 0;
@@ -3997,7 +4874,7 @@ void Basic_interpreter() {
       //print(*txtpos);
       fehler_txtpos = txtpos;
       int token = getCommandToken();
-      
+
       if (token == TOKEN_END) break;
 
       switch (token) {
@@ -4039,15 +4916,31 @@ void Basic_interpreter() {
         case TOKEN_VARIABLE: cmd_assignment(); break;
         case TOKEN_INPUT: cmd_input(); break;
         case TOKEN_POS: cmd_pos(); break;
+        case TOKEN_PAINT: cmd_paint(); break;
+        case TOKEN_GET : cmd_get(); break;
+        case TOKEN_PUT : cmd_put(); break;
+        case TOKEN_UPDATE: cmd_update(); break;
+        case TOKEN_HIDE : cmd_hide(); break;
+        case TOKEN_GFXCLS: cmd_gfx_cls(); break;
+        case TOKEN_SPLOAD: cmd_sprite_load(); break;
+        case TOKEN_TDRAW: cmd_tile_draw(); break;
+        case TOKEN_SPRITE: cmd_set_sprite(); break;
+        case TOKEN_TSHEET: cmd_tsheet(); break;
+        case TOKEN_SCROLL: cmd_scroll(); break;
+        case TOKEN_MAPLOAD: cmd_mapload(); break;
+        case TOKEN_SETSCROLL: cmd_setscroll(); break;
+        case TOKEN_PTILE: cmd_poke_tile(); break;
+        case TOKEN_ANIMATE: cmd_animate(); break;
+        case TOKEN_SETCHAR: cmd_setchar(); break;
         case TOKEN_PEN: {
-            int c = (int)expression();
+            int c = (int)get_value();
             fbcolor(c, 0);
             break;
           }
 
         case TOKEN_TRON: {
             if (*txtpos == '\0') tron_delay = 0;
-            else tron_delay = (unsigned long)expression();
+            else tron_delay = (unsigned long)get_value();
             tron_marker = true;
           }
           break;
@@ -4057,7 +4950,7 @@ void Basic_interpreter() {
             tron_delay = 0;
           }
           break;
-          
+
         case TOKEN_ELSE: {
             if (last_if_result) {
               if (tron_marker && isRunning) {                                                     // TRON-Funktion nur im RUN-Modus
@@ -4072,7 +4965,7 @@ void Basic_interpreter() {
 
 
         case TOKEN_GOTO: {
-            int target = (int)expression();
+            int target = (int)get_value();
             if (jumpTo(target)) {
               txtpos = program[currentLineIndex].text;
               jumped = true;
@@ -4088,7 +4981,7 @@ void Basic_interpreter() {
           }
 
         case TOKEN_IF: {
-            last_if_result = logical_expression(); //relation(); // Ergebnis für das ELSE speichern
+            last_if_result = get_value(); //relation(); // Ergebnis für das ELSE speichern
             if (getCommandToken() != TOKEN_THEN) {
               isRunning = false;
               break;
@@ -4127,19 +5020,19 @@ void Basic_interpreter() {
               break;
             }
 
-            variables[v1][v2] = expression();                                         // Startwert einlesen (z.B. die 1)
+            variables[v1][v2] = get_value();                                         // Startwert einlesen (z.B. die 1)
 
             if (getCommandToken() != TOKEN_TO) {                                      // TO suchen (getCommandToken schiebt den Pointer über 'TO' drüber)
               isRunning = false;
               break;
             }
 
-            double target = expression();                                               //Zielwert einlesen (z.B. die 20)
+            double target = get_value();                                               //Zielwert einlesen (z.B. die 20)
 
             double step = 1.0;                                                          // Standard-Schrittweite
             const char* savedPos = txtpos;
             if (getCommandToken() == TOKEN_STEP) {
-              step = expression();
+              step = get_value();
             } else {
               txtpos = savedPos;                                                        // txtpos zurücksetzen, falls kein STEP da war
             }
@@ -4211,7 +5104,7 @@ void Basic_interpreter() {
             int c;
             if (*txtpos == ',') {
               txtpos++;
-              c = expression();
+              c = get_value();
             }
             else {
               c = windows[currentWinIdx].fcolor;
@@ -4245,7 +5138,7 @@ void Basic_interpreter() {
           break;
         case TOKEN_CUR: {
             spaces();
-            int c = (int) expression();
+            int c = (int) get_value();
             if (c > 0) cursor_on_off = true;
             else cursor_on_off = false;
             break;
@@ -4283,6 +5176,7 @@ void Basic_interpreter() {
           }
         }
       }
+
       //delay(0);
       yield();
 
@@ -4345,7 +5239,9 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
 
   // Fenstergrenzen für die Cursor-Logik bestimmen
   int x_min = (currentWinIdx == 0) ? 0 : windows[currentWinIdx].x + 1;
-  int x_max = (currentWinIdx == 0) ? MAX_C : windows[currentWinIdx].w - 1;
+  int x_max = (currentWinIdx == 0) ? MAX_C - 1 : windows[currentWinIdx].w - 1;
+  int y_min = (currentWinIdx == 0) ? 0 : windows[currentWinIdx].y + 1;
+  int y_max = (currentWinIdx == 0) ? MAX_R - 1 : windows[currentWinIdx].h - 2;
 
   while (inEdit) {
     c = inchar();
@@ -4367,6 +5263,19 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
         return false;
       case 205:
         gfxMode = !gfxMode;
+        break;
+      case 210: // HOME
+        drawCursor(false);             // Alten Cursor löschen
+        for (int i = 0; i < cursor; i++) {
+          if (x_pos <= x_min) {
+            x_pos = x_max - 1;
+            y_pos--;
+          } else {
+            x_pos--;
+          }
+        }
+        cursor = 0;                   // Puffer-Index auf Start
+        drawCursor(cursor_on_off);
         break;
 
       case 212: // ENTF / DELETE
@@ -4394,6 +5303,16 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
           drawCursor(cursor_on_off);
         }
         break;
+
+      case 213:  //END
+        drawCursor(false);
+        while (cursor < length) {
+          outchar(buffer[cursor]);        // outchar bewegt x_pos/y_pos automatisch mit
+          cursor++;
+        }
+        drawCursor(cursor_on_off);
+        break;
+
       case 216:  // LINKS
         if (cursor > 0) {
           drawCursor(false);
@@ -4406,6 +5325,15 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
           }
           drawCursor(cursor_on_off);
         }
+        break;
+
+      case 218: //hoch
+        if (y_pos > y_min) y_pos--;
+        break;
+
+      case 217: //runter
+        if (y_pos < y_max) y_pos++;
+        //println(y_pos);
         break;
 
       case 215: // RECHTS
@@ -4492,7 +5420,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
 }
 
 void cmd_edit() {
-  int targetLine = (int)expression();
+  int targetLine = (int)get_value();
   bool continueEditing = true;
 
   while (continueEditing) {
@@ -4536,6 +5464,76 @@ void cmd_edit() {
 }
 //########################################################## Tastatur-Handling #################################################################################
 void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
+  // Speichern für Auto-Repeat
+  lastRepeatUnicode = unicode;
+  lastRepeatMod = modifier;
+  lastRepeatKeycode = keycode;
+  repeatTimer = 0;
+  repeatPhase = false;
+
+  // Deine bestehende Logik ausführen
+  process_keyboard_logic(unicode, modifier, keycode);
+}
+
+void OnRelease(int unicode, uint8_t modifier, uint8_t keycode) {
+  if (keycode == lastRepeatKeycode) {
+    lastRepeatKeycode = 0; // Stop Repeat
+  }
+}
+
+void handleRepeat() {
+  if (lastRepeatKeycode == 0) return;
+
+  if (!repeatPhase) {
+    if (repeatTimer >= REPEAT_DELAY) {
+      repeatPhase = true;
+      repeatTimer = 0;
+      process_keyboard_logic(lastRepeatUnicode, lastRepeatMod, lastRepeatKeycode);
+    }
+  } else {
+    if (repeatTimer >= REPEAT_RATE) {
+      repeatTimer = 0;
+      process_keyboard_logic(lastRepeatUnicode, lastRepeatMod, lastRepeatKeycode);
+    }
+  }
+}
+
+void process_keyboard_logic(int unicode, uint8_t mod, uint8_t keycode) {
+  bool shift = (mod & 0x02) || (mod & 0x20);
+  bool altGr = (mod & 0x40);
+
+  if (altGr) {
+    switch (keycode) {
+      case 36: lastUsbChar = 0x7B; return;
+      case 37: lastUsbChar = 0x5B; return;
+      case 38: lastUsbChar = 0x5D; return;
+      case 39: lastUsbChar = 0x7D; return;
+      case 100: lastUsbChar = 0x7C; return;
+    }
+  }
+
+  if (unicode > 31) {
+    lastUsbChar = unicode;
+    return;
+  }
+
+  switch (keycode) {
+    case 40: lastUsbChar = 13; return;
+    case 42: lastUsbChar = 8;  return;
+    case 41: lastUsbChar = 27; break_marker = true; return;
+    case 50: lastUsbChar = 35; return;
+    case 53: lastUsbChar = '^'; return;
+    case 100: lastUsbChar = (shift ? '>' : '<'); return;
+    // Hier kannst du die Pfeiltasten ergänzen:
+    case 82: lastUsbChar = 11; return; // Up
+    case 81: lastUsbChar = 10; return; // Down
+    case 80: lastUsbChar = 21; return; // Left
+    case 79: lastUsbChar = 6;  return; // Right
+  }
+}
+
+/*
+  void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
   uint8_t mod = keyboard1.getModifiers();
   bool shift = (mod & 0x02) || (mod & 0x20);
   bool altGr = (mod & 0x40);
@@ -4575,7 +5573,8 @@ void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
 
 
   }
-}
+  }
+*/
 /*
   FASTRUN void musicInterrupt() {
   for (int i = 0; i < 5; i++) {
@@ -4601,31 +5600,24 @@ void setup() {
   myusb.begin();
   //keyboard1.forceBootProtocol();
   keyboard1.attachPress(OnPress);
+  keyboard1.attachRelease(OnRelease); // Stoppt das Repeat-System
   setSyncProvider(getTeensy3Time);
 
   //Serial.begin(115200);
   //while (!Serial);
 
   vga_error_t err = vga.begin(VGA_MODE_640x480);//352x240);
-  SCB_SHPR3 = 0x20202020; // Setzt System-Interrupts auf hohe Priorität
+  //SCB_SHPR3 = 0x20202020; // Setzt System-Interrupts auf hohe Priorität
+
   if (err != 0)
   {
     println("fatal error");
     while (1);
   }
-  NVIC_SET_PRIORITY(IRQ_QTIMER3, 32);
-  // IRQ_FLEXIO1/2 sind für die Datenübertragung (Pixel) zuständig
-  NVIC_SET_PRIORITY(IRQ_FLEXIO1, 32);
-
-  // Audio-Interrupts auf niedrigere Priorität setzen (über 128)
-  // Das verhindert das Zittern, kann aber minimale Audio-Knackser verursachen
-  NVIC_SET_PRIORITY(IRQ_SOFTWARE, 200);
-  // Falls du den Standard I2S-Ausgang nutzt (Pin 21, 7, 20)
-  NVIC_SET_PRIORITY(IRQ_SAI1, 200);
 
   vga.get_frame_buffer_size(&fb_width, &fb_height);
-  vga.begin_gfxengine(1, 1, 1);
-
+  vga.begin_gfxengine(1, 256, 64);
+  
   // In der Initialisierung (z.B. bei vga.init)
   for (int r = 0; r < MAX_R; r++) {
     for (int c = 0; c < MAX_C; c++) {
@@ -4636,14 +5628,14 @@ void setup() {
   }
   //------ Hauptfenster-Attribute setzen --------
   currentWinIdx = 0;
-  windows[currentWinIdx].x = 0;
-  windows[currentWinIdx].y = 0;
-  windows[currentWinIdx].w = MAX_C;
-  windows[currentWinIdx].h = MAX_R;
-  windows[currentWinIdx].fcolor = WHITE;
-  windows[currentWinIdx].bcolor = 14;
-  windows[currentWinIdx].curX = 0;
-  windows[currentWinIdx].curY = 0;
+  windows[0].x = 0;
+  windows[0].y = 0;
+  windows[0].w = MAX_C;
+  windows[0].h = MAX_R;
+  windows[0].fcolor = WHITE;
+  windows[0].bcolor = 14;
+  windows[0].curX = 0;
+  windows[0].curY = 0;
   cmd_cls();
 
 
