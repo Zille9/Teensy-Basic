@@ -1,0 +1,2 @@
+um RunCPM zu kompilieren ist die Library USBHost_t36_patched zu verwenden.
+Die Original-Lib kollidiert mit der SD_Fat Lib.

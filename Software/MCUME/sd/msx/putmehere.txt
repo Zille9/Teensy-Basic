@@ -1,0 +1,1 @@
+8/16/32/128/256/512k .rom files (optionally msx.rom and msx2.rom for basic) or subdir

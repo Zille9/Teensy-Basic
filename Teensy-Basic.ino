@@ -7,14 +7,32 @@
 //                                                                                                                                                //
 //      Connections: SD-Card -> Builtin                                                                                                           //
 //                   VGA-Beschaltung: R: 3(2k), 4(1k), 33(470) | G:11(2k), 13(1k), 2(470) | B:10(820), 12(390) | HSync:15(82) | VSync:8 (82)      //
-//                   PCM5102 : BCK: 21, DIN 7, LCK 20                                                                                             //
+//                   PCM5102 : BCK: 21, DIN 7, LCK 20  - Kompatibilität zum MCUME-Projekt                                                         //
+//                                                                                                                                                //
+//                                                                                                                                                //
 //                                                                                                                                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#define BasicVersion "2.0"
-#define BuiltTime "07.05.2026"
+#define BasicVersion "2.2"
+//#define BuiltTime "28.05.2026"
+#define BuiltTime __TIME__
+#define BuiltDate __DATE__  
 
 //Logbuch
+//Version 2.2 28.05.2026                   -Flashloader eingebaut, es ist so möglich andere Teensy-Hex-Dateien zu laden
+//                                         -Befehl MENU eingebaut, dieser ermöglicht komfortabel die Hex-Dateien auszuwählen und zu starten
+//                                         -momentan verfügbare Emulatoren: AtariST, Amiga, C64, VC20, PC-Emu, SMS, NES, MSX, Atari800, Atari Lynx
+//                                         -Befehle MOUNT und UNMOUNT hinzugefügt um die Karte während des Betriebes einzusetzen und zu entnehmen
+//                                         -Hexmonitor erweitert, dump 0,adr zeigt den internen Basicspeicher und dump 1,adr den PSRAM an
+//                                         -BuiltTime und Date werden jetzt immer automatisch generiert, das erleichtert die Identifikation der Versionen
+//                                         -RunCPM jetzt auch auf dem Teensy lauffähig, USBHost_t36 musste geändert werden (im Ordner), 
+//                                         -da die Originalversion nicht mit SD_Fat kompatibel ist und ich wollte unbedingt die USB-Tastatur benutzen
+//                                         -303450 Zeilen/sek.
+//
+//Version 2.1 20.05.2026                   -Cursorblinken wird jetzt im Editmodus ausgeschaltet
+//                                         -im Edit-Modus wird der Cursor immer eingeschaltet, ist besser zu sehen
+//                                         -291360 Zeilen/sek.
+//
 //Version 2.0 07.05.2026                   -Tasten-Repeatfunktion eingebaut
 //                                         -editline erweitert mit HOME und END
 //                                         -GFX-Engine als Test mit eingebaut, es sind Tiles ladbar und Sprites definierbar, mal sehen ob das alles brauchbar ist
@@ -112,8 +130,15 @@
 #include <malloc.h>
 #include <vector>
 #include <algorithm>
+//#include <EEPROM.h>
 
-extern unsigned char font8x8[256][8]; 
+#include "FXUtil.h"     // Für die originale update_firmware() Funktion
+extern "C" {
+#include "FlashTxx.h" // Für firmware_buffer_init() und firmware_buffer_free()
+}
+
+
+extern unsigned char font8x8[256][8];
 
 extern "C" char* sbrk(int incr);        //für Memory-Ausgabe
 
@@ -187,7 +212,7 @@ bool cursor_on_off = true;
 #define GREEN      24
 #define RED        196
 #define GRAY       114
-
+#define ORANGE     240
 int x_pos = 0;                              // Aktuelle Position (global)
 int y_pos = 0;
 
@@ -202,6 +227,7 @@ bool tron_marker = false;                   // TRON/TROFF - Marker
 
 #include <SPI.h>
 #include <SD.h>
+
 File myFile;                                // Globale Variable für das Dateiobjekt
 struct FileEntry {
   String name;
@@ -225,7 +251,7 @@ volatile int lastUsbChar = -1;              //Merker für die letzte gedrückte 
 
 // Timing-Konstanten
 const int REPEAT_DELAY = 500;  // Millisekunden bis zur ersten Wiederholung
-const int REPEAT_RATE = 50;   // Geschwindigkeit der Wiederholung danach
+const int REPEAT_RATE = 80;   // Geschwindigkeit der Wiederholung danach
 
 // Zustandsvariablen
 uint8_t currentKey = 0;        // Die aktuell gehaltene Taste
@@ -237,6 +263,7 @@ int lastRepeatUnicode = 0;    // Speichert den Buchstaben (z.B. 'A' oder 65)
 uint8_t lastRepeatMod = 0;    // Speichert Shift/AltGr Zustand
 uint8_t lastRepeatKeycode = 0;// Speichert die physische Taste (z.B. 40 für Enter)
 
+bool edit_marker = false;
 // ASCII Characters
 #define CR  '\r'
 #define NL  '\n'
@@ -445,6 +472,8 @@ static const char wronglinenr[]      PROGMEM = "Wrong Line-Number!";            
 static const char illegalvariable[]  PROGMEM = "Illegal Variable Name";         //30
 static const char whilewendmsg[]     PROGMEM = "While-Wend-Error!";             //31
 
+
+
 int dataLineIdx = 0;   // In welcher Zeile im program[] Array sind wir?
 char* dataPtr = NULL;  // Wo genau in dieser Zeile steht der nächste Wert?
 
@@ -510,7 +539,7 @@ enum {
   TOKEN_WINDOW,
   TOKEN_RENUM,
   TOKEN_USING,            //60
-  TOKEN_SID,       //letzter Basic-Befehl
+  TOKEN_SID,       
   TOKEN_POS,
   TOKEN_PAINT,
   TOKEN_GET,
@@ -519,7 +548,7 @@ enum {
   TOKEN_HIDE,
   TOKEN_GFXCLS,
   TOKEN_SPLOAD,
-  TOKEN_TDRAW,
+  TOKEN_TDRAW,             //70
   TOKEN_SPRITE,
   TOKEN_TSHEET,
   TOKEN_SCROLL,
@@ -528,6 +557,9 @@ enum {
   TOKEN_PTILE,
   TOKEN_ANIMATE,
   TOKEN_SETCHAR,
+  TOKEN_MENU,      
+  TOKEN_MOUNT,             //80
+  TOKEN_UNMOUNT,   //letzter Basic-Befehl
   TOKEN_RND,       //erster Funktions-Befehl
   TOKEN_SQR,
   TOKEN_SIN,
@@ -536,7 +568,7 @@ enum {
   TOKEN_INT,
   TOKEN_PI,
   TOKEN_DEG,
-  TOKEN_RAD,              //70
+  TOKEN_RAD,              //90
   TOKEN_SGN,
   TOKEN_LEN,
   TOKEN_ASC,
@@ -546,7 +578,7 @@ enum {
   TOKEN_TIMER,
   TOKEN_LEFT,
   TOKEN_RIGHT,
-  TOKEN_MID,              //80
+  TOKEN_MID,              //100
   TOKEN_SPC,
   TOKEN_STR,
   TOKEN_CHR,
@@ -556,7 +588,7 @@ enum {
   TOKEN_GTIME,
   TOKEN_TIME,
   TOKEN_DATE,
-  TOKEN_FN,               //90
+  TOKEN_FN,               //110
   TOKEN_INKEY,
   TOKEN_STRING,
   TOKEN_EXP,
@@ -566,10 +598,10 @@ enum {
   TOKEN_MAX,
   TOKEN_MIN,
   TOKEN_LOG,
-  TOKEN_LN,               //100
-  TOKEN_TAN,              //letzter Funktions-Befehl
+  TOKEN_LN,               //120
+  TOKEN_TAN,              
   TOKEN_GTILE,
-  TOKEN_ITEM,
+  TOKEN_ITEM,             //letzter Funktions-Befehl
   TOKEN_END
 };
 
@@ -611,6 +643,8 @@ Keyword commands[] = {
   {"LOAD", TOKEN_LOAD},
   {"MAPLOAD", TOKEN_MAPLOAD},
   {"MEM", TOKEN_MEM},
+  {"MENU", TOKEN_MENU},
+  {"MOUNT", TOKEN_MOUNT},
   {"NEW", TOKEN_NEW},
   {"NEXT", TOKEN_NEXT},
   {"ON", TOKEN_ON},
@@ -648,6 +682,7 @@ Keyword commands[] = {
   {"TROFF", TOKEN_TROFF},
   {"TRON", TOKEN_TRON},
   {"TSHEET", TOKEN_TSHEET},
+  {"UNMOUNT", TOKEN_UNMOUNT},
   {"UPDATE", TOKEN_UPDATE},
   {"USING", TOKEN_USING},
   {"VARS", TOKEN_VARS},
@@ -1138,11 +1173,13 @@ static int inchar() {
     myusb.Task();
     handleRepeat();    // 2. Prüfen, ob eine Taste wiederholt werden muss
     if (cursor_on_off) {
-      //if (millis() - lastBlink > 250) {
-      //  cursor_state = !cursor_state;
-      drawCursor(cursor_state);
-      //  lastBlink = millis();
-      //}
+      if (!edit_marker) {                     //im Edit-Modus Cursorblinken ausschalten
+        if (millis() - lastBlink > 250) {
+          cursor_state = !cursor_state;
+          drawCursor(cursor_state);
+          lastBlink = millis();
+        }
+      }
     }
     if (lastUsbChar != -1) {
       int c = lastUsbChar;
@@ -1257,7 +1294,7 @@ static uint16_t wait_key(bool modes) {
       lastUsbChar = -1;
       return c;
     }
-    vga.waitSync();
+    //vga.waitSync();
   }
 }
 
@@ -1807,7 +1844,10 @@ double power() {
   double val = factor();
   while (true) {
     spaces();
-    if (*txtpos == '^') { txtpos++; val = pow(val, power()); }
+    if (*txtpos == '^') {
+      txtpos++;
+      val = pow(val, power());
+    }
     else return val;
   }
 }
@@ -1817,7 +1857,10 @@ double term() {
   double val = power();
   while (true) {
     spaces();
-    if (*txtpos == '*') { txtpos++; val *= power(); }
+    if (*txtpos == '*') {
+      txtpos++;
+      val *= power();
+    }
     else if (*txtpos == '/') {
       txtpos++;
       double divisor = power();
@@ -1837,8 +1880,14 @@ double expression() {
   double val = term();
   while (true) {
     spaces();
-    if (*txtpos == '+') { txtpos++; val += term(); }
-    else if (*txtpos == '-') { txtpos++; val -= term(); }
+    if (*txtpos == '+') {
+      txtpos++;
+      val += term();
+    }
+    else if (*txtpos == '-') {
+      txtpos++;
+      val -= term();
+    }
     else return val;
   }
 }
@@ -1848,9 +1897,18 @@ double bitwise() {
   double val = expression();
   while (true) {
     spaces();
-    if (*txtpos == '&') { txtpos++; val = (double)((long)val & (long)expression()); }
-    else if (*txtpos == '|') { txtpos++; val = (double)((long)val | (long)expression()); }
-    else if (*txtpos == '#') { txtpos++; val = (double)((long)val ^ (long)expression()); }
+    if (*txtpos == '&') {
+      txtpos++;
+      val = (double)((long)val & (long)expression());
+    }
+    else if (*txtpos == '|') {
+      txtpos++;
+      val = (double)((long)val | (long)expression());
+    }
+    else if (*txtpos == '#') {
+      txtpos++;
+      val = (double)((long)val ^ (long)expression());
+    }
     else return val;
   }
 }
@@ -1863,8 +1921,8 @@ double relation() {
   if (*txtpos == '<' || *txtpos == '>' || *txtpos == '=') {
     char op1 = *txtpos++;
     char op2 = (*txtpos == '=' || *txtpos == '>') ? *txtpos++ : '\0';
-    double right = bitwise(); 
-    
+    double right = bitwise();
+
     if (op1 == '=') return (left == right) ? 1.0 : 0.0;
     if (op1 == '<') {
       if (op2 == '>') return (left != right) ? 1.0 : 0.0;
@@ -1880,8 +1938,8 @@ double relation() {
 }
 
 /*
-// 6. Vergleiche: =, <, >, <=, >=, <>
-double relation() {
+  // 6. Vergleiche: =, <, >, <=, >=, <>
+  double relation() {
   spaces();
   double left = bitwise();
   if (*txtpos == '<' || *txtpos == '>' || *txtpos == '=') {
@@ -1900,7 +1958,7 @@ double relation() {
     }
   }
   return (left != 0);
-}
+  }
 */
 
 // 7. Logische Verknüpfung: AND (jetzt mit double)
@@ -1920,8 +1978,8 @@ double logical_and() {
 }
 
 /*
-// 7. Logische Verknüpfung: AND
-bool logical_and() {
+  // 7. Logische Verknüpfung: AND
+  bool logical_and() {
   bool result = relation();
   while (true) {
     spaces();
@@ -1929,7 +1987,7 @@ bool logical_and() {
     if (getCommandToken() == TOKEN_AND) result = (int)result && (int)relation();
     else { txtpos = beforeToken; return result; }
   }
-}
+  }
 */
 // 8. Logische Verknüpfung: OR (jetzt mit double)
 double logical_expression() {
@@ -1949,8 +2007,8 @@ double logical_expression() {
 
 
 /*
-// 8. Ganz oben: Logische Verknüpfung: OR
-bool logical_expression() {
+  // 8. Ganz oben: Logische Verknüpfung: OR
+  bool logical_expression() {
   bool result = logical_and();
   while (true) {
     spaces();
@@ -1958,17 +2016,17 @@ bool logical_expression() {
     if (getCommandToken() == TOKEN_OR) result = result || logical_and();
     else { txtpos = beforeToken; return result; }
   }
-}
+  }
 */
 
 double get_value() {
-    // Reicht das Ergebnis einfach durch. 
-    // Ist es eine Rechnung, kommt die Zahl (z.B. 10).
-    // Ist es ein Vergleich, kommt 1.0 oder 0.0.
-    return logical_expression();
+  // Reicht das Ergebnis einfach durch.
+  // Ist es eine Rechnung, kommt die Zahl (z.B. 10).
+  // Ist es ein Vergleich, kommt 1.0 oder 0.0.
+  return logical_expression();
 }
 /*
-double get_value() {
+  double get_value() {
     // Ruft die oberste Ebene auf (OR -> AND -> Vergleiche -> Bitwise -> Mathe)
     if (logical_expression()) {
         // Falls das Ergebnis ein logisches TRUE ist (z.B. bei "1 < 2"),
@@ -1977,10 +2035,10 @@ double get_value() {
     }
     // Falls das Ergebnis FALSE ist oder eine "0" aus der Mathe-Ebene:
     return 0.0;
-}
+  }
 */
 /*
-double power() {                                    //untere Ebene Power
+  double power() {                                    //untere Ebene Power
   double val = factor();
   while (true) {
     spaces();
@@ -1991,11 +2049,11 @@ double power() {                                    //untere Ebene Power
       return val;
     }
   }
-}
+  }
 
 
 
-double term() {                                   // Mittlere Ebene: Multiplikation und Division
+  double term() {                                   // Mittlere Ebene: Multiplikation und Division
   double val = power();
   while (true) {
     spaces();
@@ -2019,11 +2077,11 @@ double term() {                                   // Mittlere Ebene: Multiplikat
       return val;
     }
   }
-}
+  }
 
 
 
-double expression() {                             //Oberste Ebene: Addition und Subtraktion
+  double expression() {                             //Oberste Ebene: Addition und Subtraktion
   double val = term();
   while (true) {
     spaces();
@@ -2037,9 +2095,9 @@ double expression() {                             //Oberste Ebene: Addition und 
       return val;
     }
   }
-}
+  }
 
-double bitwise() {
+  double bitwise() {
     double val = term(); // Zuerst Punktrechnung (*, /, %)
     while (true) {
         spaces();
@@ -2053,12 +2111,12 @@ double bitwise() {
             return val;
         }
     }
-}
+  }
 
-bool relation() {
+  bool relation() {
   spaces();
   double left = bitwise();
-  
+
   if (*txtpos == '<' || *txtpos == '>' || *txtpos == '=') {
 
     char op1 = *txtpos++;
@@ -2082,9 +2140,9 @@ bool relation() {
     }
   }
   return (left != 0);                           // KEIN Operator, Ergebnis ist der Wert von left
-}
+  }
 
-bool logical_expression() {
+  bool logical_expression() {
   bool result = logical_and();
 
   while (true) {
@@ -2101,10 +2159,10 @@ bool logical_expression() {
       return result;
     }
   }
-}
+  }
 
 
-bool logical_and() {                            // Verarbeitet AND (höhere Priorität)
+  bool logical_and() {                            // Verarbeitet AND (höhere Priorität)
   bool result = relation();
 
   while (true) {
@@ -2121,7 +2179,7 @@ bool logical_and() {                            // Verarbeitet AND (höhere Prio
       return result;
     }
   }
-}
+  }
 */
 //############################################################ VARS ######################################################################
 String getVarName(int i, int j) {
@@ -2876,6 +2934,7 @@ void cmd_files() {
   int zeilen = 0;
   spaces();
   bool tmp_cur = cursor_on_off;
+  const char hi[] = "._";
   cursor_on_off = false;
 
   String filter = "";
@@ -2888,6 +2947,8 @@ void cmd_files() {
   File root = SD.open("/");
   if (!root) {
     syntaxerror(sderrormsg);
+    cursor_on_off = tmp_cur;
+    drawCursor(cursor_on_off);
     return;
   }
 
@@ -2899,6 +2960,12 @@ void cmd_files() {
     String fileName = String(entry.name());
     String fileNameUpper = fileName;
     fileNameUpper.toUpperCase();
+
+    // Versteckte Dateien ausblenden
+    if (strstr(entry.name(), hi)) {
+      entry.close();
+      continue;
+    }
 
     if (filter == "" || fileNameUpper.indexOf(filter) != -1) {
       DateTimeFields tm;
@@ -2918,9 +2985,16 @@ void cmd_files() {
     print(" (Filter: *"); print(filter); println("*)");
   }
   println("----------------------------------------");
+for (const auto& f : fileList) {
+    int aktuelles_limit = windows[currentWinIdx].h - 10;//(root.name()[0] == '/' && zeilen == 0 && fileList.size() > 20) ? (MAX_R - 12) : (MAX_R - 10);
+    if (aktuelles_limit < 10) aktuelles_limit = 10; // Sicherheitsanker, falls MAX_R defekt ist
 
-  // 4. Sortierte Liste ausgeben
-  for (const auto& f : fileList) {
+    if (zeilen >= aktuelles_limit) {
+      int key = wait_key(1);
+      if (key == 27) break; // ESC bricht ab
+      zeilen = 0;          // Reset für die neue Seite
+    }
+
     print(" ");
 
     // Farbwahl
@@ -2929,14 +3003,18 @@ void cmd_files() {
     else if (nUpper.endsWith(".BIN")) fbcolor(GREEN, 0);
     else if (nUpper.endsWith(".BMP") || nUpper.endsWith(".JPG")) fbcolor(RED, 0);
     else if (f.isDir) fbcolor(YELLOW, 0);
-
-    // Name kürzen
+    else if (nUpper.endsWith(".HEX")) fbcolor(ORANGE, 0);
+    // Name SICHER kürzen (Verhindert Zeilenumbruch im Grafiktreiber)
     String display = f.name;
     if (f.isDir) display += "/";
-    if (display.length() > 16) display = display.substring(0, 14) + "...";
+    if (display.length() > 15) {
+      display = display.substring(0, 12) + "...";
+    }
 
     print(display);
-    for (int i = 0; i < (17 - display.length()); i++) print(" ");
+    int spaces_to_print = 16 - display.length();
+    if (spaces_to_print < 0) spaces_to_print = 0;
+    for (int i = 0; i < spaces_to_print; i++) print(" ");
     fbcolor(WHITE, 0);
 
     // Größe RECHTSBÜNDIG (9 Stellen)
@@ -2946,8 +3024,9 @@ void cmd_files() {
       fbcolor(WHITE, 0);
     } else {
       String sSize = String(f.size);
-      // Führende Leerzeichen für Rechtsbündigkeit
-      for (int i = 0; i < (9 - sSize.length()); i++) print(" ");
+      int size_spaces = 9 - sSize.length();
+      if (size_spaces < 0) size_spaces = 0;
+      for (int i = 0; i < size_spaces; i++) print(" ");
       print(sSize);
     }
 
@@ -2956,18 +3035,9 @@ void cmd_files() {
     if (f.dt.mday < 10) print("0"); print(f.dt.mday); print(".");
     if (f.dt.mon + 1 < 10) print("0"); print(f.dt.mon + 1); print(".");
     print(f.dt.year + 1900);
-    println();
+    println(); 
 
-    zeilen++;
-
-    // Paging
-    int limit = (currentWinIdx == 0) ? MAX_R - 10 : windows[currentWinIdx].h - 4;
-    if (zeilen >= limit) {
-      print("-- Press Key --");
-      if (wait_key(1) == 27) break;
-      zeilen = 0;
-      // Kurzes Löschen der "Press Key" Zeile könnte man hier noch einfügen
-    }
+    zeilen++; 
   }
 
   println("---------------------------------------");
@@ -3042,59 +3112,128 @@ void cmd_load() {
 
   const char* fileName = fileNameStr.c_str();
   int filetype = getFileTypeID(fileName);
-  if (filetype == 4){                       //4=BAS-Datei
-  // 2. Datei auf der SD-Karte des Teensy 4.1 suchen
-  if (!SD.exists(fileName)) {
-    print("FILE NOT FOUND: ");
-    println(fileName);
-    return;
-  }
-
-  File file = SD.open(fileName);
-  if (!file) {
-    println("ERROR: Could not open file");
-    return;
-  }
-
-  cmd_new();
-
-  print("Loading "); println(fileName);
-
-  char lineBuffer[128];
-  while (file.available()) {
-    int len = 0;
-    // Zeile aus Datei lesen
-    while (file.available() && len < 127) {
-      char c = file.read();
-
-      if (c == '\n') break;
-      if (c != '\r') lineBuffer[len++] = c;
+  if (filetype == 4) {                      //4=BAS-Datei
+    // 2. Datei auf der SD-Karte des Teensy 4.1 suchen
+    if (!SD.exists(fileName)) {
+      print("FILE NOT FOUND: ");
+      println(fileName);
+      return;
     }
-    lineBuffer[len] = '\0';
 
-    const char* p = lineBuffer;
-
-    while (*p && isspace(*p)) p++; // spaces() Ersatz für lokalen Buffer
-
-    if (isdigit(*p)) {
-      int lineNumber = atoi(p);
-      while (isdigit(*p)) p++;
-
-      // storeLine speichert den Rest der Zeile unter dieser Nummer
-      trimLeadingSpaces(p);
-      storeLine(lineNumber, p);
+    File file = SD.open(fileName);
+    if (!file) {
+      println("ERROR: Could not open file");
+      return;
     }
-  }
 
-  file.close();
-  // Wichtig: Nach dem Laden sicherstellen, dass isRunning false ist
-  isRunning = false;
+    cmd_new();
+
+    print("Loading "); println(fileName);
+
+    char lineBuffer[128];
+    while (file.available()) {
+      int len = 0;
+      // Zeile aus Datei lesen
+      while (file.available() && len < 127) {
+        char c = file.read();
+
+        if (c == '\n') break;
+        if (c != '\r') lineBuffer[len++] = c;
+      }
+      lineBuffer[len] = '\0';
+
+      const char* p = lineBuffer;
+
+      while (*p && isspace(*p)) p++; // spaces() Ersatz für lokalen Buffer
+
+      if (isdigit(*p)) {
+        int lineNumber = atoi(p);
+        while (isdigit(*p)) p++;
+
+        // storeLine speichert den Rest der Zeile unter dieser Nummer
+        trimLeadingSpaces(p);
+        storeLine(lineNumber, p);
+      }
+    }
+
+    file.close();
+    // Wichtig: Nach dem Laden sicherstellen, dass isRunning false ist
+    isRunning = false;
   }
-  else if(filetype == 3){     //3=Font-Datei
+  else if (filetype == 3) {   //3=Font-Datei
     cmd_loadfont(fileName);
+  }
+  else if (filetype == 5) {
+    load_hex(fileName);
   }
 }
 
+
+
+
+void load_hex(String filename) {
+  uint32_t buffer_addr, buffer_size;
+
+  printmsg("INITIALISIERE MULTIBOOT-PUFFER...", 1);
+  delay(500);
+
+  // 1. Offiziellen FlasherX-Speicherpuffer anfordern
+  if (firmware_buffer_init(&buffer_addr, &buffer_size) == 0) {
+    syntaxerror("Fehler: Flash-Puffer fehlgeschlagen!");
+    return;
+  }
+
+  // 2. Datei über die bereits laufende SD-Instanz öffnen
+  File hexFile = SD.open(filename.c_str(), FILE_READ);
+  if (!hexFile) {
+    syntaxerror("HEX-Datei nicht gefunden!");
+    firmware_buffer_free(buffer_addr, buffer_size);
+    return;
+  }
+
+  printmsg("FIRMWARE-TRANSFER STARTET...", 1);
+  delay(200);
+
+  // 3. Das originale FlasherX übernimmt: Einlesen, RAM-Kopieren, Reboot
+  update_firmware(&hexFile, &Serial, buffer_addr, buffer_size);
+
+  // Fallback: Nur wenn die HEX-Datei fehlerhaft/unvollständig war, läuft der Code hier weiter
+  hexFile.close();
+  printmsg("FEHLER: Hex-Struktur ungueltig. Reboot...", 1);
+
+  firmware_buffer_free(buffer_addr, buffer_size);
+  delay(1000);
+
+  REBOOT; // Zurück ins stabile BASIC booten
+}
+
+/*
+  void load_hex(String filename) {
+  filename.toUpperCase();                                                         // 1. Dateinamen in Großbuchstaben umwandeln (wichtig für SD-Karten-Kompatibilität)
+  print("Load ");
+  println(filename);
+  delay(500);
+  EEPROM.write(0, 0xAA);                                                          // 2. Multiboot-Flag (0xAA) an Adresse 0 setzen
+  int len = filename.length();                                                    // 3. Den Dateinamen sicher ins EEPROM schreiben
+  int i = 0;
+  for (; i < len && i < 29; i++) {                                                // 4. Dateiname in EEPROM schreiben
+    EEPROM.write(1 + i, filename[i]);
+  }
+  EEPROM.write(1 + i, '\0');                                                      // 5. Nullbyte-Abschluss zur Sicherheit im EEPROM setzen
+  print("Reboot...");
+  #if defined(ARDUINO_ARCH_MEGAAVR) || defined(ESP32) || defined(TEENSYDUINO)
+    // Teensy nutzt EEPROM-Emulation, ein Commit stellt sicher, dass es permanent ist
+  #endif
+  delay(500);
+
+  #define RESTART_ADDR 0xE000ED0C                                                 // 6. Teensy neu starten
+  #define WRITE_RESTART(val) ((*(volatile uint32_t *)RESTART_ADDR) = (val))
+  WRITE_RESTART(0x05FA0004);
+  while(1) {
+    delay(10);
+  }
+  }
+*/
 //############################################################ SAVE ######################################################################
 void cmd_save() {
   //musicTimer.end(); // Timer kurz stoppen
@@ -3122,27 +3261,27 @@ void cmd_save() {
 
     SD.remove(fileName);                                      // Wenn 'y', löschen wir die alte Datei vor dem Neuschreiben
   }
-  if(filetype == 4){
-  // Ab hier wie gehabt: Datei öffnen und speichern
-  File file = SD.open(fileName, FILE_WRITE);
-  if (!file) {
-    print("ERROR: Could not create ");
+  if (filetype == 4) {
+    // Ab hier wie gehabt: Datei öffnen und speichern
+    File file = SD.open(fileName, FILE_WRITE);
+    if (!file) {
+      print("ERROR: Could not create ");
+      println(fileName);
+      return;
+    }
+
+    print("Saving to ");
     println(fileName);
-    return;
-  }
 
-  print("Saving to ");
-  println(fileName);
+    for (int j = 0; j < lineCount; j++) {
+      file.print(program[j].number);
+      file.print(" ");
+      file.println(program[j].text);
+    }
+    file.close();
+  }
+  else if (filetype == 3) cmd_savefont(fileName);
 
-  for (int j = 0; j < lineCount; j++) {
-    file.print(program[j].number);
-    file.print(" ");
-    file.println(program[j].text);
-  }
-  file.close();
-  }
-  else if(filetype == 3) cmd_savefont(fileName);
-  
 }
 
 //############################################################ DEL  ########################################################################
@@ -3771,7 +3910,45 @@ void cmd_settime()
 
 //########################################################## Dump #################################################################################
 
+void hexMonitor(uint8_t* startAddr, uint32_t baseAddr) {
+  int zeilen = 0;
 
+  if (startAddr == NULL) {
+    println("Error: Null Pointer");
+    return;
+  }
+
+  while (1) {
+    // Zieht die jeweils übergebene Basisadresse flexibel ab!
+    uint32_t relativeAddr = (uint32_t)((uintptr_t)startAddr - baseAddr);
+    vprintf("%06X:", relativeAddr);
+
+    for (int j = 0; j < 8; j++) {
+      vprintf("%02X ", startAddr[j]);
+    }
+
+    for (int j = 0; j < 8; j++) {
+      char c = startAddr[j];
+      print((c >= 32 && c <= 126) ? c : '.');
+    }
+    println();
+    startAddr += 8;
+    zeilen++;
+
+    if (zeilen == MAX_R - 10) {
+      if (wait_key(1) == 27) break; 
+      
+      // Sicheres Löschen und USB-Entprellung für Folgeseiten
+      delay(150);
+      lastUsbChar = -1;
+      print("\r                                 \r");
+      
+      zeilen = 0; 
+    }
+  }
+}
+
+/*
 void hexMonitor(uint8_t* startAddr) {
   int zeilen = 0; // 1. Initialisieren!
 
@@ -3804,8 +3981,69 @@ void hexMonitor(uint8_t* startAddr) {
     }
   }
 }
+*/
+void cmd_dump() {
+  uint32_t mem_type = 0;
+  uint32_t offset = 0;
+  uint32_t baseAddr = 0;
+  uint8_t* targetAddr = NULL;
+
+  spaces();
+
+  // 1. Wenn gar keine Eingabe erfolgt, standardmäßig BASIC-Speicher bei 0 anzeigen
+  if (*txtpos == '\0' || *txtpos == '\r' || *txtpos == '\n') {
+    mem_type = 0;
+    offset = 0;
+  } else {
+    // 2. Speicher-Typ einlesen (0 oder 1)
+    mem_type = get_value(); 
+    spaces();
+
+    // 3. Prüfen, ob das trennende Komma folgt
+    if (*txtpos == ',') {
+      txtpos++; // Komma überspringen
+      spaces();
+      offset = get_value(); // Adresse/Offset einlesen
+    } else {
+      // Wenn kein Komma folgt, nehmen wir an, es wurde nur ein Wert eingegeben.
+      // Für Abwärtskompatibilität: Nur ein Wert = PSRAM-Offset (wie zuvor)
+      offset = mem_type;
+      mem_type = 1; // Automatisch auf PSRAM umschalten
+    }
+  }
+
+  // 4. Adressen und Grenzen je nach Speicher-Typ zuweisen
+  if (mem_type == 0) {
+    // === MODUS 0: BASIC SPEICHER ===
+    // Ersetze 'basic_program_buffer' durch deine echte BASIC-Speichervariable
+    uint8_t* basic_start = (uint8_t*)program; 
+    
+    baseAddr = (uint32_t)(uintptr_t)basic_start;
+    targetAddr = basic_start + offset;
+    
+  } else if (mem_type == 1) {
+    // === MODUS 1: PSRAM SPEICHER ===
+    if (offset <= 0x7FFFFF) { // 8MB Validierung
+      baseAddr = 0x70000000;
+      targetAddr = (uint8_t*)(baseAddr + offset);
+    } else {
+      syntaxerror(memorymsg);
+      return;
+    }
+  } else {
+    // Ungültiger Speichertyp (weder 0 noch 1)
+    syntaxerror(syntaxmsg);
+    return;
+  }
+
+  // 5. Den universellen Monitor aufrufen
+  if (targetAddr != NULL) {
+    hexMonitor(targetAddr, baseAddr);
+  }
+}
 
 
+/*
 void cmd_dump() {
   uint32_t offset;
   spaces();
@@ -3828,6 +4066,7 @@ void cmd_dump() {
     syntaxerror(memorymsg);//println("Error: Offset too large! Max is 0x7FFFFF (8MB).");
   }
 }
+*/
 //########################################################## DEFN - Befehl ######################################################################################
 
 void cmd_defn() {
@@ -3906,6 +4145,7 @@ int getFileTypeID(const char* filename) {
   if (name.endsWith(".bmp")) return 2;
   if (name.endsWith(".fnt")) return 3;
   if (name.endsWith(".bas")) return 4;
+  if (name.endsWith(".hex")) return 5;
   return 0; // Unbekannt
 }
 
@@ -4689,7 +4929,7 @@ void cmd_setscroll() {
 }
 //########################################################## MAPSAVE - Befehl #########################################################################################
 /*
-void cmd_save_map() {
+  void cmd_save_map() {
   // Syntax: SAVE_MAP "level1.map"
   String fname = parseStringExpression();
 
@@ -4702,7 +4942,7 @@ void cmd_save_map() {
   } else {
     Serial.println("Fehler beim Speichern!");
   }
-}
+  }
 */
 //########################################################## PTILE - Befehl #########################################################################################
 
@@ -4758,21 +4998,21 @@ void cmd_animate() {
 //########################################################## SETCHAR - Befehl #########################################################################################
 
 void cmd_setchar() {
-    // Syntax: SETCHAR ascii_code, b1, b2, b3, b4, b5, b6, b7, b8
-    int ascii = (int)get_value(); 
-    if (ascii < 0 || ascii > 255) return;
+  // Syntax: SETCHAR ascii_code, b1, b2, b3, b4, b5, b6, b7, b8
+  int ascii = (int)get_value();
+  if (ascii < 0 || ascii > 255) return;
 
-    for (int i = 0; i < 8; i++) {
-        if (Test_char(',')) return;
-        font8x8[ascii][i] = (unsigned char)get_value();
-    }
+  for (int i = 0; i < 8; i++) {
+    if (Test_char(',')) return;
+    font8x8[ascii][i] = (unsigned char)get_value();
+  }
 }
 //########################################################## LOADFONT - Befehl #########################################################################################
 
 void cmd_loadfont(String filename) {
   // Syntax: LOADFONT "myfont.bin"
   //String fileName = parseStringExpression(); // Holt den Dateinamen aus dem BASIC
-  
+
   File fontFile = SD.open(filename.c_str(), FILE_READ);
   if (fontFile) {
     // Wir lesen die 2048 Bytes direkt in unser RAM-Array
@@ -4781,9 +5021,9 @@ void cmd_loadfont(String filename) {
     fontFile.close();
   } else {
     if (!fontFile) {
-    println(sdfilemsg);
-    return;
-  }
+      println(sdfilemsg);
+      return;
+    }
     // Fehlerbehandlung falls Datei nicht existiert
   }
 }
@@ -4791,9 +5031,9 @@ void cmd_loadfont(String filename) {
 
 void cmd_savefont(String filename) {
   /*
-  // Syntax: SAVEFONT "myfont.bin"
-  String filename = get_string(); 
-  if (SD.exists(filename.c_str())) {
+    // Syntax: SAVEFONT "myfont.bin"
+    String filename = get_string();
+    if (SD.exists(filename.c_str())) {
     print("File exists. Overwrite? (y/n): ");
     char choice = tolower(wait_key(0));
     println(String(choice));
@@ -4802,8 +5042,8 @@ void cmd_savefont(String filename) {
       return;
     }
     SD.remove(filename.c_str());
-  }
-*/
+    }
+  */
   File fontFile = SD.open(filename.c_str(), FILE_WRITE);
   if (fontFile) {
     // Schreibe den gesamten Font-Speicher (256 Zeichen * 8 Bytes)
@@ -4814,6 +5054,31 @@ void cmd_savefont(String filename) {
     syntaxerror(sdfilemsg);
   }
 }
+
+
+void cmd_mount() {
+  spaces();
+  if (SD.begin(BUILTIN_SDCARD)) {
+    fbcolor(GREEN, 0);
+    println("SD-Card mounted successfully.");
+    fbcolor(WHITE, 0);
+  } else {
+    fbcolor(RED, 0);
+    println("Mount failed! No SD-Card found.");
+    fbcolor(WHITE, 0);
+  }
+}
+
+void cmd_unmount() {
+  spaces();
+  // 1. Alle offenen Datei-Handles schließen und Puffer leeren
+  SD.sdfs.end();
+  fbcolor(YELLOW, 0);
+  println("SD-Card unmounted. Safe to remove.");
+  fbcolor(WHITE, 0);
+  return;
+}
+
 //#################################################################################### Hauptprogrammschleife ###########################################################################################
 void Basic_interpreter() {
   int lineNumber;
@@ -4932,6 +5197,9 @@ void Basic_interpreter() {
         case TOKEN_PTILE: cmd_poke_tile(); break;
         case TOKEN_ANIMATE: cmd_animate(); break;
         case TOKEN_SETCHAR: cmd_setchar(); break;
+        case TOKEN_MENU : show_multiboot_menu(); break;
+        case TOKEN_MOUNT: cmd_mount(); break;
+        case TOKEN_UNMOUNT: cmd_unmount(); break;
         case TOKEN_PEN: {
             int c = (int)get_value();
             fbcolor(c, 0);
@@ -5092,6 +5360,7 @@ void Basic_interpreter() {
             if (*txtpos == ',') txtpos++;
             String fileName = parseStringExpression();
             int t = getFileTypeID(fileName.c_str());                                    //gucken, ob jpg,jpeg oder bmp
+            if (y_pos > 57) y_pos = 57;                                                 //scrollen verhindern, sonst Bild weg
             if (t == 1) drawJpeg(fileName.c_str(), lp.val[0], lp.val[1]);
             else if (t == 2) drawBMP(fileName.c_str(), lp.val[0], lp.val[1]);
             else syntaxerror(extension_error);
@@ -5109,7 +5378,7 @@ void Basic_interpreter() {
             else {
               c = windows[currentWinIdx].fcolor;
             }
-
+            if (y_pos > 57) y_pos = 57;                                                 //scrollen verhindern, sonst Bild weg
             vga.drawline(lp.val[0], lp.val[1], lp.val[2], lp.val[3], c);
           }
           break;
@@ -5117,6 +5386,7 @@ void Basic_interpreter() {
         case TOKEN_RECT: {
             spaces();
             Params lp = getParams(5);
+            if (y_pos > 57) y_pos = 57;                                                 //scrollen verhindern, sonst Bild weg
             if (lp.val[4] > 0) vga.drawRect(lp.val[0], lp.val[1], lp.val[2], lp.val[3], windows[currentWinIdx].fcolor);// RECT(x,y,w,h,color,fill)
             else {
               vga.drawline(lp.val[0], lp.val[1], lp.val[2], lp.val[1], windows[currentWinIdx].fcolor); //quer
@@ -5131,6 +5401,7 @@ void Basic_interpreter() {
         case TOKEN_CIRC: {
             spaces();
             Params lp = getParams(5);
+            if (y_pos > 57) y_pos = 57;                                                 //scrollen verhindern, sonst Bild weg
             if (lp.val[4] > 0) vga.drawfilledellipse(lp.val[0], lp.val[1], lp.val[2], lp.val[3] , windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor); //CIRC x,y,w,h,fill
             else
               vga.drawellipse(lp.val[0], lp.val[1], lp.val[2], lp.val[3], windows[currentWinIdx].fcolor);
@@ -5260,6 +5531,7 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
         break;
 
       case 27: // ESC
+
         return false;
       case 205:
         gfxMode = !gfxMode;
@@ -5416,12 +5688,15 @@ bool editLine(char* buffer, int bufferSize, int& cursor, int& length) {
         break;
     }
   }
+
   return false;
 }
 
 void cmd_edit() {
   int targetLine = (int)get_value();
   bool continueEditing = true;
+  edit_marker = true;                                   //Marker das wir im Edit-Modus sind ->Cursorblinken ausschalten
+  cursor_on_off = true;                                 //im Edit-Modus Cursor immer einschalten
 
   while (continueEditing) {
     int foundIndex = -1;
@@ -5450,7 +5725,6 @@ void cmd_edit() {
 
       if (foundIndex + 1 < lineCount) {
         targetLine = program[foundIndex + 1].number;
-        //outchar(13);
       } else {
         println(" (Last line reached)");
         continueEditing = false;
@@ -5461,9 +5735,15 @@ void cmd_edit() {
   }
 
   *txtpos = '\0';
+  edit_marker = false;                                    // nicht mehr im Edit-Modus -> Cursorblinken wieder an
+
 }
 //########################################################## Tastatur-Handling #################################################################################
 void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
+  if (lastRepeatKeycode != 0) {   //verhindert weiterlaufen der Repeatfunktion, wenn sich zwei Tasten überlappen
+    lastRepeatKeycode = 0; 
+    repeatPhase = false;
+  }
   // Speichern für Auto-Repeat
   lastRepeatUnicode = unicode;
   lastRepeatMod = modifier;
@@ -5532,82 +5812,24 @@ void process_keyboard_logic(int unicode, uint8_t mod, uint8_t keycode) {
   }
 }
 
-/*
-  void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
-  uint8_t mod = keyboard1.getModifiers();
-  bool shift = (mod & 0x02) || (mod & 0x20);
-  bool altGr = (mod & 0x40);
-  //print(keycode);
-  // 1.PRIORITÄT: AltGr (muss vor Unicode kommen!)
-  if (altGr) {
-    switch (keycode) {
 
-      case 36: lastUsbChar = 0x7B; return; // { (Taste 7)
-      case 37: lastUsbChar = 0x5B; return; // [ (Taste 8)
-      case 38: lastUsbChar = 0x5D; return; // ] (Taste 9)
-      case 39: lastUsbChar = 0x7D; return; // } (Taste 0)
-      case 100: lastUsbChar = 0x7C; return; //| (Taste <)
-        //case 114: lastUsbChar = '\''; return;
-    }
-  }
-
-  if (unicode > 31) {
-    lastUsbChar = unicode;
-    return;
-  }
-
-  switch (keycode) {
-
-    case 40: lastUsbChar = 13; return; // Enter
-    case 42: lastUsbChar = 8;  return; // Backspace
-    case 41:                           // ESC
-      lastUsbChar = 27;
-      break_marker = true;
-      return;
-    case 50: lastUsbChar = 35; return;
-    case 53: lastUsbChar = '^'; return; // Zirkumflex
-    case 100:
-      if (shift) lastUsbChar = '>';
-      else lastUsbChar = '<';
-      return;
-
-
-  }
-  }
-*/
-/*
-  FASTRUN void musicInterrupt() {
-  for (int i = 0; i < 5; i++) {
-    updateMusic(i);
-    vga.waitSync();
-  }
-
-  }
-*/
 //########################################################## SETUP ########################################################################################
 
 void setup() {
-  //AudioMemory(40);
-  //setupAudio();
+  //------------------------------------------------------ Start Updater ------------------------------------------------------------------------------------
+  Serial.begin(115200);
 
-  /*
-    Serial.begin(9600);
-    delay(1000);
-    if (CrashReport) {
-      Serial.print(CrashReport); // Zeigt an, ob es ein Speicherfehler (MPU) oder ähnliches war
-    }
-  */
+  delay(200);
+
+  //------------------------------------------------------ Ende Updater -------------------------------------------------------------------------------------
+
   myusb.begin();
   //keyboard1.forceBootProtocol();
   keyboard1.attachPress(OnPress);
   keyboard1.attachRelease(OnRelease); // Stoppt das Repeat-System
   setSyncProvider(getTeensy3Time);
 
-  //Serial.begin(115200);
-  //while (!Serial);
-
   vga_error_t err = vga.begin(VGA_MODE_640x480);//352x240);
-  //SCB_SHPR3 = 0x20202020; // Setzt System-Interrupts auf hohe Priorität
 
   if (err != 0)
   {
@@ -5617,7 +5839,7 @@ void setup() {
 
   vga.get_frame_buffer_size(&fb_width, &fb_height);
   vga.begin_gfxengine(1, 256, 64);
-  
+
   // In der Initialisierung (z.B. bei vga.init)
   for (int r = 0; r < MAX_R; r++) {
     for (int c = 0; c < MAX_C; c++) {
@@ -5642,7 +5864,9 @@ void setup() {
   printmsg(" *** TEENSY BASIC ", 0);
   print(BasicVersion);
   printmsg(" by Zille-Soft ***", 1);
-  printmsg("       **** Built ", 0);
+  printmsg("  **** Built ", 0);
+  print(BuiltDate);
+  print(" ");
   print(BuiltTime);
   printmsg(" ****", 1);
   printmsg("    *** ", 0);
@@ -5664,4 +5888,116 @@ void setup() {
 
 void loop() {
   Basic_interpreter();
+}
+
+//############################################################################ Testbereich ##################################################################################
+void show_multiboot_menu() {
+  const int max_files = 20;
+  String hex_files[max_files];
+  int file_count = 0;
+  const char hi[] = "._";
+  bool alter_cursor_zustand = cursor_on_off;
+
+
+  cmd_cls();              // lösche Bildschirm und starte ganz oben
+  cursor_on_off = false;
+  drawCursor(false); 
+  printmsg("\n*** TEENSY 4.1 MULTIBOOT SELECTION ***", 1);
+  printmsg("           Scanning SD-Card...\n", 1);
+  delay(100);
+
+  // 2. SD-Hauptverzeichnis nach .HEX-Dateien durchsuchen
+  File root = SD.open("/");
+  if (!root) {
+    printmsg("ERROR: SD-Card not ready!", 1);
+    cursor_on_off = alter_cursor_zustand;
+    return;
+  }
+
+  while (File entry = root.openNextFile()) {
+    if (!entry.isDirectory() && (!strstr(entry.name(), hi))) {
+      String name = entry.name();
+      name.toUpperCase();
+      if (name.endsWith(".HEX") && file_count < max_files) {
+        hex_files[file_count] = entry.name();
+        file_count++;
+      }
+    }
+    entry.close();
+  }
+  root.close();
+
+  if (file_count == 0) {
+    printmsg("No .HEX-Files found!", 1);
+    printmsg("Press Key", 1);
+    while (inchar() == 0) {
+      delay(10);
+    }
+    cursor_on_off = alter_cursor_zustand;
+    return;
+  }
+  println();
+  printmsg("\nCOOSE HEX-FILE WITH CURSOR-KEY's [ENTER = START]:", 1);
+  printmsg("===================================================", 1);
+  println();
+  int menu_start_x = x_pos;
+  int menu_start_y = y_pos;
+
+  int selected = 0;
+  bool redraw = true;
+  bool running = true;
+
+while (running) {
+    if (redraw) {
+      x_pos = menu_start_x;
+      y_pos = menu_start_y;
+
+      for (int i = 0; i < file_count; i++) {
+        if (i == selected) {
+          // --- AKTIVER EINTRAG: ANDERE FARBE + KLAMMERN ---
+          fbcolor(ORANGE, 0); 
+          String line = " > [ " + hex_files[i] + " ]  ";
+          printmsg((char*)line.c_str(), 1);
+        } else {
+          // --- INAKTIVER EINTRAG: STANDARD ---
+          fbcolor(WHITE, 0); 
+          
+          String line = "   " + hex_files[i] + "    ";
+          printmsg((char*)line.c_str(), 1);
+        }
+      }
+      fbcolor(WHITE, 0); 
+      redraw = false;
+    }
+
+    int key = inchar();
+    if (key != 0) {
+      if (key == 13) { // ENTER-Taste
+        running = false;
+      }
+      else if (key == 218) { // NACH OBEN
+        if (selected > 0) {
+          selected--;
+          redraw = true;
+        }
+      }
+      else if (key == 217) { // NACH UNTEN
+        if (selected < file_count - 1) {
+          selected++;
+          redraw = true;
+        }
+      }
+      else if (key == 27) { // ESCAPE (Abbrechen)
+        fbcolor(WHITE, 0); // Sicherheits-Reset
+        cursor_on_off = alter_cursor_zustand;
+        printmsg(breakmsg, 1);
+        return;
+      }
+    }
+    delay(10);
+  }
+  // 5. Systemwechsel mit der ausgewählten Datei starten!
+  cursor_on_off = alter_cursor_zustand;
+  String datei_zum_flashen = hex_files[selected];
+  load_hex(datei_zum_flashen);
 }

@@ -1,0 +1,16 @@
+# Use a standard style as a base (e.g., LLVM)
+BasedOnStyle: LLVM
+# Attach open braces to the previous line for all constructs
+BreakBeforeBraces: Attach
+# Put 'else' and 'catch' on the same line as the preceding closing brace
+BraceWrapping:
+  AfterControlStatement: true
+  BeforeElse: true
+# Set the ident size to 4
+IndentWidth: 4
+# Set the right margin to none
+ColumnLimit: 0
+# Indent preprocessor directives after the hash (#)
+IndentPPDirectives: BeforeHash
+# Do not reorder #include directives
+SortIncludes: Never

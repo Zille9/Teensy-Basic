@@ -1,0 +1,1 @@
+Genesis/megadrive .bin not interlaced rom files or subdir
