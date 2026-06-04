@@ -27,6 +27,9 @@
 //                                         -BuiltTime und Date werden jetzt immer automatisch generiert, das erleichtert die Identifikation der Versionen
 //                                         -RunCPM jetzt auch auf dem Teensy lauffähig, USBHost_t36 musste geändert werden (im Ordner), 
 //                                         -da die Originalversion nicht mit SD_Fat kompatibel ist und ich wollte unbedingt die USB-Tastatur benutzen
+//                                         -Tastenrepeat-Funktion etwas geändert, es konnte passieren, das die Repeat-Funktion nach Teste loslassen weiterlief
+//                                         -THEME - Befehl eingeführt THEME zeigt die verfügbaren Themes, Theme id - wählt ein Theme aus, Theme S - speichert die aktuellen 
+//                                         -Vorder und Hintergrundfarben als User-Theme (wird beim start automatisch geladen)
 //                                         -303450 Zeilen/sek.
 //
 //Version 2.1 20.05.2026                   -Cursorblinken wird jetzt im Editmodus ausgeschaltet
@@ -130,7 +133,7 @@
 #include <malloc.h>
 #include <vector>
 #include <algorithm>
-//#include <EEPROM.h>
+#include <EEPROM.h>
 
 #include "FXUtil.h"     // Für die originale update_firmware() Funktion
 extern "C" {
@@ -215,6 +218,32 @@ bool cursor_on_off = true;
 #define ORANGE     240
 int x_pos = 0;                              // Aktuelle Position (global)
 int y_pos = 0;
+
+// Struktur für ein Thema
+struct ColorTheme {
+  const char* name;
+  uint8_t textColor;
+  uint8_t bgColor;
+};
+
+// Definition deiner Themen (Beispiele)
+ColorTheme themes[] = {
+  {"Standard CP/M", 255,0},  // Weiß auf Schwarz
+  {"Commodore 64",      19,2},  
+  {"Matrix Green",      28,  0},  
+  {"Amstrad CPC",       252, 2},  
+  {"Commodore C128",    62, 73},  
+  {"Robotron KC85/2-4", 255,35},
+  {"Atari 800",         18, 41},
+  {"TRS-80",            62, 0},
+  {"User Theme",        255, 0}  // User-Theme ->änderbar
+};
+
+const int TOTAL_THEMES = sizeof(themes) / sizeof(themes[0]);
+int currentThemeIndex = 0; // Aktuell geladenes Thema
+
+// Adresse im EEPROM, wo das Thema gespeichert wird
+const int EEPROM_THEME_ADDR = 0;
 
 struct Params {                             //struct für wiederkehrende Parametereingaben
   int val[10];
@@ -416,9 +445,9 @@ UserFunction function[26]; // Für A-Z
 
 struct BasicWindow {
   int x, y, w, h;
-  uint16_t tcolor;
-  uint16_t fcolor;
-  uint16_t bcolor;
+  uint8_t tcolor;
+  uint8_t fcolor;
+  uint8_t bcolor;
   char* title;
   int curX, curY; // Eigener Cursor-Speicher für jedes Fenster
   bool active;    // Ist das Fenster gerade sichtbar?
@@ -560,6 +589,7 @@ enum {
   TOKEN_MENU,      
   TOKEN_MOUNT,             //80
   TOKEN_UNMOUNT,   //letzter Basic-Befehl
+  TOKEN_THEME,
   TOKEN_RND,       //erster Funktions-Befehl
   TOKEN_SQR,
   TOKEN_SIN,
@@ -677,6 +707,7 @@ Keyword commands[] = {
   {"STIME", TOKEN_STIME},
   {"TAB", TOKEN_TAB},
   {"TDRAW", TOKEN_TDRAW},
+  {"THEME", TOKEN_THEME},
   {"THEN", TOKEN_THEN},
   {"TO", TOKEN_TO},
   {"TROFF", TOKEN_TROFF},
@@ -1386,6 +1417,7 @@ void cmd_list() {
 
   currentIndent = 0;
   int tmp_color = windows[currentWinIdx].bcolor;          //aktuelle Hintergrundfarbe sichern
+  int tmp_txtcol= windows[currentWinIdx].fcolor;          //aktuelle Textfarbe sichern
   fbcolor(0, 1);                                          //Hintergrund für die Listausgabe in Schwarz
 
   int zeilen = 0;
@@ -1416,6 +1448,7 @@ void cmd_list() {
       }
     }
   }
+  fbcolor(tmp_txtcol, 0);
   fbcolor(tmp_color, 1);
 }
 
@@ -4904,6 +4937,7 @@ void Basic_interpreter() {
         case TOKEN_MENU : show_multiboot_menu(); break;
         case TOKEN_MOUNT: cmd_mount(); break;
         case TOKEN_UNMOUNT: cmd_unmount(); break;
+        case TOKEN_THEME: cmd_theme(); break;
         case TOKEN_PEN: {
             int c = (int)get_value();
             fbcolor(c, 0);
@@ -5518,6 +5552,39 @@ void process_keyboard_logic(int unicode, uint8_t mod, uint8_t keycode) {
 
 
 //########################################################## SETUP ########################################################################################
+void printSpaces(int count) {
+  for (int i = 0; i < count; i++) {
+    print(" ");
+  }
+}
+
+void printWelcomeMessage() {
+  println();
+  int len1 = 19 + String(BasicVersion).length() + 17;
+  printSpaces((80 - len1) / 2);
+  printmsg(" *** TEENSY BASIC ", 0);
+  print(BasicVersion);
+  printmsg(" by Zille-Soft ***", 1); 
+
+  // Zeile 2: "  **** Built [Datum] [Zeit] ****"
+  int len2 = 14 + String(BuiltDate).length() + 1 + String(BuiltTime).length() + 5;
+  printSpaces((80 - len2) / 2);
+  printmsg("  **** Built ", 0);
+  print(BuiltDate);
+  print(" ");
+  print(BuiltTime);
+  printmsg(" ****", 1);
+
+  // Zeile 3: "    *** [Bytes] Basic Bytes free ***"
+  int len3 = 13 + String((int)get_mem(5)).length() + 20;
+  printSpaces((80 - len3) / 2);
+  printmsg("    *** ", 0);
+  print((int)get_mem(5));
+  printmsg(" Basic  Bytes free ***", 1);
+
+  println();
+}
+
 
 void setup() {
   //------------------------------------------------------ Start Updater ------------------------------------------------------------------------------------
@@ -5562,9 +5629,11 @@ void setup() {
   windows[0].bcolor = 14;
   windows[0].curX = 0;
   windows[0].curY = 0;
-  cmd_cls();
+  loadSavedTheme();
+  //cmd_cls();
 
-
+  //printWelcomeMessage();
+  /*
   printmsg(" *** TEENSY BASIC ", 0);
   print(BasicVersion);
   printmsg(" by Zille-Soft ***", 1);
@@ -5577,6 +5646,7 @@ void setup() {
   print((int)get_mem(5));
   printmsg(" Basic Bytes free ***", 1);
   println();
+  */
   if (!SD.begin(chipSelect)) {
     syntaxerror(sderrormsg);
   }
@@ -5593,8 +5663,8 @@ void setup() {
 void loop() {
   Basic_interpreter();
 }
+//############################################################################ Flashloader ##################################################################################
 
-//############################################################################ Testbereich ##################################################################################
 void show_multiboot_menu() {
   const int max_files = 20;
   String hex_files[max_files];
@@ -5704,4 +5774,67 @@ while (running) {
   cursor_on_off = alter_cursor_zustand;
   String datei_zum_flashen = hex_files[selected];
   load_hex(datei_zum_flashen);
+}
+//############################################################################ Testbereich ##################################################################################
+void listThemes() {
+  printmsg("---  Themes ---", 1);
+  for (int i = 0; i < TOTAL_THEMES; i++) {
+    print(" "); print(i); print(": ");
+    printmsg(themes[i].name, 1);
+  }
+}
+
+void cmd_theme(){
+  spaces();
+  if(*txtpos == ':' || *txtpos =='\0') {listThemes(); return;}
+  if(*txtpos == 'S') {txtpos++; saveTheme(TOTAL_THEMES - 1); return;}
+  int th = get_value();
+  if((th < (TOTAL_THEMES)) && (th > -1)) {applyTheme(th); return;}
+}
+
+
+void applyTheme(int index) {
+  if (index >= 0 && index < TOTAL_THEMES) {
+    currentThemeIndex = index;
+    if(currentThemeIndex == TOTAL_THEMES - 1){
+      windows[currentWinIdx].fcolor = EEPROM.read(EEPROM_THEME_ADDR + 1);
+      windows[currentWinIdx].bcolor = EEPROM.read(EEPROM_THEME_ADDR + 2);
+    } else {
+    windows[currentWinIdx].fcolor = themes[index].textColor;
+    windows[currentWinIdx].bcolor = themes[index].bgColor;
+    }
+    cmd_cls();
+    printWelcomeMessage();
+  }
+}
+
+
+void saveTheme(int index) {
+  EEPROM.update(EEPROM_THEME_ADDR, index); 
+  if(index == TOTAL_THEMES - 1){
+    themes[TOTAL_THEMES - 1].textColor = windows[currentWinIdx].fcolor;
+    themes[TOTAL_THEMES - 1].bgColor   = windows[currentWinIdx].bcolor;
+    EEPROM.update(EEPROM_THEME_ADDR + 1, windows[currentWinIdx].fcolor);
+    EEPROM.update(EEPROM_THEME_ADDR + 2, windows[currentWinIdx].bcolor);
+  }
+  applyTheme(index);
+  EEPROM.update(EEPROM_THEME_ADDR, index); 
+  printmsg("Theme saved!", 1);
+}
+
+
+void loadSavedTheme() {
+  int savedIndex = EEPROM.read(EEPROM_THEME_ADDR);
+  if (savedIndex >= 0 && savedIndex < TOTAL_THEMES) {
+    
+    if (savedIndex == TOTAL_THEMES - 1) {
+      themes[TOTAL_THEMES - 1].textColor = EEPROM.read(EEPROM_THEME_ADDR + 1);
+      themes[TOTAL_THEMES - 1].bgColor   = EEPROM.read(EEPROM_THEME_ADDR + 2);
+    }
+    
+    applyTheme(savedIndex);
+  } else {
+    applyTheme(0); // Fallback auf Standard, falls EEPROM leer war
+  }
+  
 }
