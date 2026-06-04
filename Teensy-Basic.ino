@@ -134,7 +134,7 @@
 
 #include "FXUtil.h"     // Für die originale update_firmware() Funktion
 extern "C" {
-#include "FlashTxx.h" // Für firmware_buffer_init() und firmware_buffer_free()
+#include "FlashTxx.h"   // Für firmware_buffer_init() und firmware_buffer_free()
 }
 
 
@@ -761,7 +761,6 @@ struct RGB {
 
 
 void fbcolor(uint8_t vgaVal, bool vh) {
-  // Globale Farb-Arrays für den System-Standard aktualisieren
   if (vh) {
     windows[currentWinIdx].bcolor = vgaVal;
   } else {
@@ -804,7 +803,6 @@ void cmd_cls() {
   uint8_t fg = windows[currentWinIdx].fcolor;
 
   if (currentWinIdx == 0) {
-    // Spezialfall: Hauptbildschirm komplett löschen
     for (int r = 0; r < MAX_R; r++) {
       for (int c = 0; c < MAX_C; c++) {
         screenBuffer[r][c] = ' ';
@@ -817,7 +815,6 @@ void cmd_cls() {
     vga.clear(bg);
   }
   else {
-    // Nur den Bereich des aktuellen Fensters löschen (ohne Rahmen/Titel)
     // Wir starten bei y_min + 1, um die Titelzeile stehen zu lassen
     for (int r = y_min + 1; r < y_max; r++) {
       for (int c = x_min; c < x_max; c++) {
@@ -826,7 +823,6 @@ void cmd_cls() {
         colorBuffer_H[r][c] = windows[currentWinIdx].bcolor;
 
         // Pixel auf dem Display löschen (8x8 Zeichenblock)
-        //vga.drawText(c * 8, r * 8, " ", windows[currentWinIdx].fcolor, windows[currentWinIdx].bcolor, false);
         vga.drawRect(c * 8, r * 8, 8, 8, windows[currentWinIdx].bcolor);
       }
     }
@@ -1089,7 +1085,7 @@ int getCommandToken() {
 //###################################################### finde Funktions-Token ###############################################################
 
 int getFunctionToken() {
-  //isStringVar = false;
+
   spaces();
   lastTokenPos = txtpos;
   if (*txtpos == '\0') return TOKEN_END;
@@ -1159,7 +1155,6 @@ void getln(int showReady) {
     // Bei ESC: Zeile leeren
     inputBuffer[0] = '\0';
     txtpos = inputBuffer;
-    //println("Break!");
 
   }
 }
@@ -1937,30 +1932,6 @@ double relation() {
   return left; // GANZ WICHTIG: Reicht den echten Wert (z.B. 10) nach oben!
 }
 
-/*
-  // 6. Vergleiche: =, <, >, <=, >=, <>
-  double relation() {
-  spaces();
-  double left = bitwise();
-  if (*txtpos == '<' || *txtpos == '>' || *txtpos == '=') {
-    char op1 = *txtpos++;
-    char op2 = (*txtpos == '=' || *txtpos == '>') ? *txtpos++ : '\0';
-    double right = bitwise(); // Vergleicht Bit-Ergebnisse
-    if (op1 == '=') return left == right;
-    if (op1 == '<') {
-      if (op2 == '>') return left != right;
-      if (op2 == '=') return left <= right;
-      return left < right;
-    }
-    if (op1 == '>') {
-      if (op2 == '=') return left >= right;
-      return left > right;
-    }
-  }
-  return (left != 0);
-  }
-*/
-
 // 7. Logische Verknüpfung: AND (jetzt mit double)
 double logical_and() {
   double result = relation();
@@ -1977,18 +1948,7 @@ double logical_and() {
   }
 }
 
-/*
-  // 7. Logische Verknüpfung: AND
-  bool logical_and() {
-  bool result = relation();
-  while (true) {
-    spaces();
-    char *beforeToken = txtpos;
-    if (getCommandToken() == TOKEN_AND) result = (int)result && (int)relation();
-    else { txtpos = beforeToken; return result; }
-  }
-  }
-*/
+
 // 8. Logische Verknüpfung: OR (jetzt mit double)
 double logical_expression() {
   double result = logical_and();
@@ -2006,181 +1966,10 @@ double logical_expression() {
 }
 
 
-/*
-  // 8. Ganz oben: Logische Verknüpfung: OR
-  bool logical_expression() {
-  bool result = logical_and();
-  while (true) {
-    spaces();
-    char *beforeToken = txtpos;
-    if (getCommandToken() == TOKEN_OR) result = result || logical_and();
-    else { txtpos = beforeToken; return result; }
-  }
-  }
-*/
-
 double get_value() {
-  // Reicht das Ergebnis einfach durch.
-  // Ist es eine Rechnung, kommt die Zahl (z.B. 10).
-  // Ist es ein Vergleich, kommt 1.0 oder 0.0.
   return logical_expression();
 }
-/*
-  double get_value() {
-    // Ruft die oberste Ebene auf (OR -> AND -> Vergleiche -> Bitwise -> Mathe)
-    if (logical_expression()) {
-        // Falls das Ergebnis ein logisches TRUE ist (z.B. bei "1 < 2"),
-        // geben wir 1.0 zurück.
-        return 1.0;
-    }
-    // Falls das Ergebnis FALSE ist oder eine "0" aus der Mathe-Ebene:
-    return 0.0;
-  }
-*/
-/*
-  double power() {                                    //untere Ebene Power
-  double val = factor();
-  while (true) {
-    spaces();
-    if (*txtpos == '^') {
-      txtpos++;
-      val = pow(val, power());
-    } else {
-      return val;
-    }
-  }
-  }
 
-
-
-  double term() {                                   // Mittlere Ebene: Multiplikation und Division
-  double val = power();
-  while (true) {
-    spaces();
-    if (*txtpos == '*') {
-      txtpos++;
-      val *= power();
-    } else if (*txtpos == '/') {
-      txtpos++;
-      double divisor = power();
-      if (divisor != 0) val /= divisor;
-      else syntaxerror(zeroerror);
-    } else if (*txtpos == '%') {                  // Modulo Operator
-      txtpos++;
-      double divisor = power();
-      if (divisor != 0) {
-        val = fmod(val, divisor);                 // fmod ist die Modulo-Funktion für double
-      } else {
-        syntaxerror(zeroerror);
-      }
-    } else {
-      return val;
-    }
-  }
-  }
-
-
-
-  double expression() {                             //Oberste Ebene: Addition und Subtraktion
-  double val = term();
-  while (true) {
-    spaces();
-    if (*txtpos == '+') {
-      txtpos++;
-      val += term();
-    } else if (*txtpos == '-') {
-      txtpos++;
-      val -= term();
-    } else {
-      return val;
-    }
-  }
-  }
-
-  double bitwise() {
-    double val = term(); // Zuerst Punktrechnung (*, /, %)
-    while (true) {
-        spaces();
-        if (*txtpos == '&') {
-            txtpos++;
-            // Umwandeln in Ganzzahlen für bitweise Operation
-            long v1 = (long)val;
-            long v2 = (long)term();
-            val = (double)(v1 & v2);
-        } else {
-            return val;
-        }
-    }
-  }
-
-  bool relation() {
-  spaces();
-  double left = bitwise();
-
-  if (*txtpos == '<' || *txtpos == '>' || *txtpos == '=') {
-
-    char op1 = *txtpos++;
-    char op2 = '\0';
-
-    if (*txtpos == '=' || *txtpos == '>') {
-      op2 = *txtpos++;
-    }
-
-    double right = get_value();
-
-    if (op1 == '=') return left == right;
-    if (op1 == '<') {
-      if (op2 == '>') return left != right;
-      if (op2 == '=') return left <= right;
-      return left < right;
-    }
-    if (op1 == '>') {
-      if (op2 == '=') return left >= right;
-      return left > right;
-    }
-  }
-  return (left != 0);                           // KEIN Operator, Ergebnis ist der Wert von left
-  }
-
-  bool logical_expression() {
-  bool result = logical_and();
-
-  while (true) {
-    spaces();
-    char *beforeToken = txtpos;
-    int token = getCommandToken();
-
-    if (token == TOKEN_OR) {
-      bool or_res = logical_and();              // Rechter Teil muss erst AND prüfen
-      result = result || or_res;
-    }
-    else {
-      txtpos = beforeToken;
-      return result;
-    }
-  }
-  }
-
-
-  bool logical_and() {                            // Verarbeitet AND (höhere Priorität)
-  bool result = relation();
-
-  while (true) {
-    spaces();
-    char *beforeToken = txtpos;
-    int token = getCommandToken();
-
-    if (token == TOKEN_AND) {
-      bool and_res = relation();
-      result = result && and_res;
-    }
-    else {
-      txtpos = beforeToken;
-      return result;
-    }
-  }
-  }
-*/
 //############################################################ VARS ######################################################################
 String getVarName(int i, int j) {
   String name = "";
@@ -3207,33 +2996,6 @@ void load_hex(String filename) {
   REBOOT; // Zurück ins stabile BASIC booten
 }
 
-/*
-  void load_hex(String filename) {
-  filename.toUpperCase();                                                         // 1. Dateinamen in Großbuchstaben umwandeln (wichtig für SD-Karten-Kompatibilität)
-  print("Load ");
-  println(filename);
-  delay(500);
-  EEPROM.write(0, 0xAA);                                                          // 2. Multiboot-Flag (0xAA) an Adresse 0 setzen
-  int len = filename.length();                                                    // 3. Den Dateinamen sicher ins EEPROM schreiben
-  int i = 0;
-  for (; i < len && i < 29; i++) {                                                // 4. Dateiname in EEPROM schreiben
-    EEPROM.write(1 + i, filename[i]);
-  }
-  EEPROM.write(1 + i, '\0');                                                      // 5. Nullbyte-Abschluss zur Sicherheit im EEPROM setzen
-  print("Reboot...");
-  #if defined(ARDUINO_ARCH_MEGAAVR) || defined(ESP32) || defined(TEENSYDUINO)
-    // Teensy nutzt EEPROM-Emulation, ein Commit stellt sicher, dass es permanent ist
-  #endif
-  delay(500);
-
-  #define RESTART_ADDR 0xE000ED0C                                                 // 6. Teensy neu starten
-  #define WRITE_RESTART(val) ((*(volatile uint32_t *)RESTART_ADDR) = (val))
-  WRITE_RESTART(0x05FA0004);
-  while(1) {
-    delay(10);
-  }
-  }
-*/
 //############################################################ SAVE ######################################################################
 void cmd_save() {
   //musicTimer.end(); // Timer kurz stoppen
@@ -3948,40 +3710,7 @@ void hexMonitor(uint8_t* startAddr, uint32_t baseAddr) {
   }
 }
 
-/*
-void hexMonitor(uint8_t* startAddr) {
-  int zeilen = 0; // 1. Initialisieren!
 
-  if (startAddr == NULL) {
-    println("Error: Null Pointer");
-    return;
-  }
-
-  while (1) {
-    uint32_t relativeAddr = (uint32_t)((uintptr_t)startAddr - 0x70000000);
-    vprintf("%06X:", relativeAddr);
-
-    for (int j = 0; j < 8; j++) {
-      vprintf("%02X ", startAddr[j]);
-    }
-    //print(" ");
-
-    for (int j = 0; j < 8; j++) {
-      char c = startAddr[j];
-      print((c >= 32 && c <= 126) ? c : '.');
-    }
-    //println("|");
-    println();
-    startAddr += 8;
-    zeilen++;
-
-    if (zeilen == MAX_R - 10) { // 2. Check gegen 20
-      if (wait_key(1) == 27) break; // Falls waitkey true (z.B. ESC), beenden
-      zeilen = 0; // 3. NUR HIER zurücksetzen!
-    }
-  }
-}
-*/
 void cmd_dump() {
   uint32_t mem_type = 0;
   uint32_t offset = 0;
@@ -4042,31 +3771,6 @@ void cmd_dump() {
   }
 }
 
-
-/*
-void cmd_dump() {
-  uint32_t offset;
-  spaces();
-
-  // Wenn keine Eingabe erfolgt, fange bei 0 an
-  if (*txtpos == '\0' || *txtpos == '\r' || *txtpos == '\n') {
-    offset = 0;
-  } else {
-    offset = get_value();
-  }
-
-  // Validierung: Offset darf maximal 8MB (0x7FFFFF) sein
-  if (offset <= 0x7FFFFF) {
-    // Addiere die PSRAM Basis-Adresse 0x70000000 zum Offset
-    uint8_t* psramAddr = (uint8_t*)(0x70000000 + offset);
-
-    // Den Monitor mit der berechneten Adresse aufrufen
-    hexMonitor(psramAddr);
-  } else {
-    syntaxerror(memorymsg);//println("Error: Offset too large! Max is 0x7FFFFF (8MB).");
-  }
-}
-*/
 //########################################################## DEFN - Befehl ######################################################################################
 
 void cmd_defn() {
