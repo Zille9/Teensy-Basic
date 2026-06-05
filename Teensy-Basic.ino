@@ -13,19 +13,22 @@
 //                                                                                                                                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#define BasicVersion "2.2"
-//#define BuiltTime "28.05.2026"
+#define BasicVersion "2.3"
 #define BuiltTime __TIME__
 #define BuiltDate __DATE__  
 
 //Logbuch
+//Version 2.3 05.06.2026                   -Kurz-Hilfesystem begonnen
+//                                         -
+//                                         -
+//
 //Version 2.2 28.05.2026                   -Flashloader eingebaut, es ist so möglich andere Teensy-Hex-Dateien zu laden
 //                                         -Befehl MENU eingebaut, dieser ermöglicht komfortabel die Hex-Dateien auszuwählen und zu starten
 //                                         -momentan verfügbare Emulatoren: AtariST, Amiga, C64, VC20, PC-Emu, SMS, NES, MSX, Atari800, Atari Lynx
 //                                         -Befehle MOUNT und UNMOUNT hinzugefügt um die Karte während des Betriebes einzusetzen und zu entnehmen
 //                                         -Hexmonitor erweitert, dump 0,adr zeigt den internen Basicspeicher und dump 1,adr den PSRAM an
 //                                         -BuiltTime und Date werden jetzt immer automatisch generiert, das erleichtert die Identifikation der Versionen
-//                                         -RunCPM jetzt auch auf dem Teensy lauffähig, USBHost_t36 musste geändert werden (im Ordner), 
+//                                         -RunCPM jetzt auch auf dem Teensy lauffähig, USBHost_t36 musste geändert werden (patched Version im Ordner), 
 //                                         -da die Originalversion nicht mit SD_Fat kompatibel ist und ich wollte unbedingt die USB-Tastatur benutzen
 //                                         -Tastenrepeat-Funktion etwas geändert, es konnte passieren, das die Repeat-Funktion nach Teste loslassen weiterlief
 //                                         -THEME - Befehl eingeführt THEME zeigt die verfügbaren Themes, Theme id - wählt ein Theme aus, Theme S - speichert die aktuellen 
@@ -150,7 +153,7 @@ VGA_T4 vga;
 #include <JPEGDEC.h>                    //JPEG-Decoder
 JPEGDEC jpeg;
 
-#define PSRAM_SIZE (8 * 1024 * 1024) // 8 MB gesamt
+//#define external_psram_size (8 * 1024 * 1024) // 8 MB gesamt
 
 #define BUF_SIZE 80
 char inputBuffer[BUF_SIZE];
@@ -229,12 +232,12 @@ struct ColorTheme {
 // Definition deiner Themen (Beispiele)
 ColorTheme themes[] = {
   {"Standard CP/M", 255,0},  // Weiß auf Schwarz
-  {"Commodore 64",      19,2},  
+  {"Commodore 64",      115, 2},  
   {"Matrix Green",      28,  0},  
   {"Amstrad CPC",       252, 2},  
   {"Commodore C128",    62, 73},  
   {"Robotron KC85/2-4", 255,35},
-  {"Atari 800",         18, 41},
+  {"Atari 800",         115, 5},
   {"TRS-80",            62, 0},
   {"User Theme",        255, 0}  // User-Theme ->änderbar
 };
@@ -588,8 +591,10 @@ enum {
   TOKEN_SETCHAR,
   TOKEN_MENU,      
   TOKEN_MOUNT,             //80
-  TOKEN_UNMOUNT,   //letzter Basic-Befehl
+  TOKEN_UNMOUNT,   
   TOKEN_THEME,
+  TOKEN_TEXT,
+  TOKEN_HELP,      //letzter Basic-Befehl
   TOKEN_RND,       //erster Funktions-Befehl
   TOKEN_SQR,
   TOKEN_SIN,
@@ -665,6 +670,7 @@ Keyword commands[] = {
   {"GFXCLS", TOKEN_GFXCLS},
   {"GOSUB", TOKEN_GOSUB},
   {"GOTO", TOKEN_GOTO},
+  {"HELP", TOKEN_HELP},
   {"HIDE", TOKEN_HIDE},
   {"IF", TOKEN_IF},
   {"INPUT", TOKEN_INPUT},
@@ -707,6 +713,7 @@ Keyword commands[] = {
   {"STIME", TOKEN_STIME},
   {"TAB", TOKEN_TAB},
   {"TDRAW", TOKEN_TDRAW},
+  {"TEXT", TOKEN_TEXT},
   {"THEME", TOKEN_THEME},
   {"THEN", TOKEN_THEN},
   {"TO", TOKEN_TO},
@@ -2758,6 +2765,8 @@ void cmd_files() {
   bool tmp_cur = cursor_on_off;
   const char hi[] = "._";
   cursor_on_off = false;
+  int tmp_color = windows[currentWinIdx].bcolor;          //aktuelle Hintergrundfarbe sichern
+  int tmp_txtcol= windows[currentWinIdx].fcolor;          //aktuelle Textfarbe sichern
 
   String filter = "";
   if (*txtpos == '"' || isalpha(*txtpos)) {
@@ -2868,6 +2877,9 @@ for (const auto& f : fileList) {
   print("Used : "); printSmartSize(SD.usedSize());
   print("Free : "); printSmartSize(SD.totalSize() - SD.usedSize());
   print("Total: "); printSmartSize(SD.totalSize());
+  
+  fbcolor(tmp_txtcol, 0);                                               //Farben wieder setzen
+  fbcolor(tmp_color, 1);
   cursor_on_off = tmp_cur;
   drawCursor(cursor_on_off);
 }
@@ -4792,6 +4804,7 @@ void cmd_savefont(String filename) {
   }
 }
 
+//########################################################## MOUNT - Befehl ###########################################################################################
 
 void cmd_mount() {
   spaces();
@@ -4805,6 +4818,7 @@ void cmd_mount() {
     fbcolor(WHITE, 0);
   }
 }
+//########################################################## UNMOUNT - Befehl #########################################################################################
 
 void cmd_unmount() {
   spaces();
@@ -4815,7 +4829,30 @@ void cmd_unmount() {
   fbcolor(WHITE, 0);
   return;
 }
+//########################################################## TEXT - Befehl ############################################################################################
 
+void cmd_text(){  //text x,y,textcolor, backcolor,"text",breit
+  
+  spaces();
+  int x = get_value();
+  if(Test_char(',')) return;
+  int y = get_value();
+  if(Test_char(',')) return;
+  uint8_t fc = get_value();
+  if(Test_char(',')) return;
+  uint8_t bc = get_value();
+  if(Test_char(',')) return;
+  String textstr = parseStringExpression();
+  
+  
+  
+  
+  if(Test_char(',')) return;
+  uint8_t w = get_value();
+  if(w > 0) vga.drawText(x, y, textstr.c_str(), fc, bc, true);
+  else vga.drawText(x, y, textstr.c_str(), fc, bc, false);
+  
+}
 //#################################################################################### Hauptprogrammschleife ###########################################################################################
 void Basic_interpreter() {
   int lineNumber;
@@ -4938,6 +4975,8 @@ void Basic_interpreter() {
         case TOKEN_MOUNT: cmd_mount(); break;
         case TOKEN_UNMOUNT: cmd_unmount(); break;
         case TOKEN_THEME: cmd_theme(); break;
+        case TOKEN_TEXT: cmd_text(); break;
+        case TOKEN_HELP: cmd_help(); break;
         case TOKEN_PEN: {
             int c = (int)get_value();
             fbcolor(c, 0);
@@ -5125,7 +5164,7 @@ void Basic_interpreter() {
             spaces();
             Params lp = getParams(5);
             if (y_pos > 57) y_pos = 57;                                                 //scrollen verhindern, sonst Bild weg
-            if (lp.val[4] > 0) vga.drawRect(lp.val[0], lp.val[1], lp.val[2], lp.val[3], windows[currentWinIdx].fcolor);// RECT(x,y,w,h,color,fill)
+            if (lp.val[4] > 0) vga.drawRect(lp.val[0], lp.val[1], lp.val[2], lp.val[3], windows[currentWinIdx].fcolor);// RECT x,y,w,h,color,fill
             else {
               vga.drawline(lp.val[0], lp.val[1], lp.val[2], lp.val[1], windows[currentWinIdx].fcolor); //quer
               vga.drawline(lp.val[0], lp.val[1], lp.val[0], lp.val[3], windows[currentWinIdx].fcolor);//links runter
