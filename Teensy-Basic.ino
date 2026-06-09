@@ -1,7 +1,18 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //             Basic - Interpreter für TEENSY 4.1                                                                                                 //
 //               for VGA monitor output - März 2026                                                                                               //
+//      mit folgenden Features: Fliesskomma-Arithmetik mit double-Präzision, viele math.Funktionen (SIN,COS,TAN,LN,EXP,PI,LOG,DEFN usw.)          //
+//                              Strings, Arrays mit bis zu 3 Dimensionen, DATA,READ,RESTORE,                                                      //
+//                              Grafikbefehle CIRC,LINE,PAINT,PSET,RECT usw.                                                                      //
+//                              WHILE,WEND, SPRITE-Handling(noch in Arbeit)                                                                       //
+//                              Flashloader mit Menue, Kurz-Hilfesystem, Anzeige der belegten Variablen, Hexmonitor                               //
 //                                                                                                                                                //
+//                                                                                                                                                //
+//      was noch fehlt        : File-Operationen (READ,WRITE,OPEN CLOSE,FILEPOS)  - ok                                                            //
+//                              Sound                                                                                                             //
+//                              PEEK,POKE                                                                                                         //
+//                              Unterstützung von I2C Hardware,                                                                                   //
+//                              JOYSTICK - Funktionen                                                                                             //
 //                                                                                                                                                //
 //      von:Reinhard Zielinski <zille09@gmail.com>                                                                                                //
 //                                                                                                                                                //
@@ -15,12 +26,18 @@
 
 #define BasicVersion "2.3"
 #define BuiltTime __TIME__
-#define BuiltDate __DATE__  
+#define BuiltDate __DATE__
 
 //Logbuch
-//Version 2.3 05.06.2026                   -Kurz-Hilfesystem begonnen
-//                                         -
-//                                         -
+//Version 2.3 05.06.2026                   -Kurz-Hilfesystem fast fertig
+//                                         -Dateioperationen FILE_OP = Open, FILE_CL = Close, FILE_RD = Read, FILE_WR = Write hinzugefügt -> muss noch ausgiebig getestet werden
+//                                         -FILE_OP"Filename.xxx",R oder W, FILE_RD oder FILE_WR var,var,var, FILE_CL -> Datei schließen
+//                                         -GFILE(0) gibt die Position innerhalb einer Datei zurück, GFILE(1) gibt die Dateigrösse zurück
+//                                         -Befehl GCHAR(x,y,mode) hinzugefügt gibt das Zeichen (mode 0) die Vordergrundfarbe (1) oder die Hintergrundfarbe(2) an Position x,y zurück
+//                                         -Befehl TYPE"Filename.ext" hinzugefügt, zeigt den Inhalt von Dateien auf dem Bildschirm an
+//                                         -Befehle HEX,BIN und OCT korrigiert - sie gaben die falschen Werte zurück (Fehler in der Function_Print)
+//                                         -Korrektur im Print-Befehl, Zahlenwerte mit Nullen nach dem Dezimalpunkt wurden immer mit den maximalen Nachkommastellen angezeigt
+//                                         -289725 Zeilen/sek.
 //
 //Version 2.2 28.05.2026                   -Flashloader eingebaut, es ist so möglich andere Teensy-Hex-Dateien zu laden
 //                                         -Befehl MENU eingebaut, dieser ermöglicht komfortabel die Hex-Dateien auszuwählen und zu starten
@@ -28,15 +45,15 @@
 //                                         -Befehle MOUNT und UNMOUNT hinzugefügt um die Karte während des Betriebes einzusetzen und zu entnehmen
 //                                         -Hexmonitor erweitert, dump 0,adr zeigt den internen Basicspeicher und dump 1,adr den PSRAM an
 //                                         -BuiltTime und Date werden jetzt immer automatisch generiert, das erleichtert die Identifikation der Versionen
-//                                         -RunCPM jetzt auch auf dem Teensy lauffähig, USBHost_t36 musste geändert werden (patched Version im Ordner), 
+//                                         -RunCPM jetzt auch auf dem Teensy lauffähig, USBHost_t36 musste geändert werden (patched Version im Ordner),
 //                                         -da die Originalversion nicht mit SD_Fat kompatibel ist und ich wollte unbedingt die USB-Tastatur benutzen
 //                                         -Tastenrepeat-Funktion etwas geändert, es konnte passieren, das die Repeat-Funktion nach Teste loslassen weiterlief
-//                                         -THEME - Befehl eingeführt THEME zeigt die verfügbaren Themes, Theme id - wählt ein Theme aus, Theme S - speichert die aktuellen 
+//                                         -THEME - Befehl eingeführt THEME zeigt die verfügbaren Themes, Theme id - wählt ein Theme aus, Theme S - speichert die aktuellen
 //                                         -Vorder und Hintergrundfarben als User-Theme (wird beim start automatisch geladen)
 //                                         -303450 Zeilen/sek.
 //
 //Version 2.1 20.05.2026                   -Cursorblinken wird jetzt im Editmodus ausgeschaltet
-//                                         -im Edit-Modus wird der Cursor immer eingeschaltet, ist besser zu sehen
+//                                         -im Edit-Modus wird der Cursor immer eingeschaltet-> ist besser zu sehen
 //                                         -291360 Zeilen/sek.
 //
 //Version 2.0 07.05.2026                   -Tasten-Repeatfunktion eingebaut
@@ -162,6 +179,14 @@ static char *fehler_txtpos;
 bool inQuotes = false;
 extern "C" uint8_t external_psram_size;
 
+//------------------------------------ Dateifunktionen FREAD,FWRITE -------------------------------------------------------------------------------
+String fileNameStr;                       //Namensstring für Dateioperationen Fread,Fwrite
+static char sd_pfad[BUF_SIZE];            //SD-Card Datei-Pfad
+static bool Datei_open = false;          //FREAD, FWRITE Open-marker
+long File_pos = 0;                       //Dateipositions-merker der geöffneten Datei
+long File_size = 0;                      //Dateigrösse der geöffneten Datei
+File fp;
+//------------------------------------ Bildschirm-Variablen ---------------------------------------------------------------------------------------
 static int fb_width, fb_height;
 int currentIndent = 0;
 
@@ -197,6 +222,8 @@ int currentHScroll0 = 0;                   // Aktuelle Pixel-Position
 int lastHitX = 0;
 int lastHitY = 0;
 
+
+
 struct TileAnim {
   int target;  // Das Tile in der Map
   int source;  // Start-Index im Tilesheet
@@ -231,12 +258,12 @@ struct ColorTheme {
 
 // Definition deiner Themen (Beispiele)
 ColorTheme themes[] = {
-  {"Standard CP/M", 255,0},  // Weiß auf Schwarz
-  {"Commodore 64",      115, 2},  
-  {"Matrix Green",      28,  0},  
-  {"Amstrad CPC",       252, 2},  
-  {"Commodore C128",    62, 73},  
-  {"Robotron KC85/2-4", 255,35},
+  {"Standard CP/M", 255, 0}, // Weiß auf Schwarz
+  {"Commodore 64",      115, 2},
+  {"Matrix Green",      28,  0},
+  {"Amstrad CPC",       252, 2},
+  {"Commodore C128",    62, 73},
+  {"Robotron KC85/2-4", 255, 35},
   {"Atari 800",         115, 5},
   {"TRS-80",            62, 0},
   {"User Theme",        255, 0}  // User-Theme ->änderbar
@@ -532,7 +559,7 @@ enum {
   TOKEN_DATA,
   TOKEN_READ,             //20
   TOKEN_RESTORE,
-  TOKEN_FILES,
+  TOKEN_FILE,
   TOKEN_DIR,
   TOKEN_LOAD,
   TOKEN_SAVE,
@@ -571,7 +598,7 @@ enum {
   TOKEN_WINDOW,
   TOKEN_RENUM,
   TOKEN_USING,            //60
-  TOKEN_SID,       
+  TOKEN_SID,
   TOKEN_POS,
   TOKEN_PAINT,
   TOKEN_GET,
@@ -589,12 +616,13 @@ enum {
   TOKEN_PTILE,
   TOKEN_ANIMATE,
   TOKEN_SETCHAR,
-  TOKEN_MENU,      
+  TOKEN_MENU,
   TOKEN_MOUNT,             //80
-  TOKEN_UNMOUNT,   
+  TOKEN_UNMOUNT,
   TOKEN_THEME,
   TOKEN_TEXT,
-  TOKEN_HELP,      //letzter Basic-Befehl
+  TOKEN_HELP,
+  TOKEN_TYPE,      //letzter Basic-Befehl
   TOKEN_RND,       //erster Funktions-Befehl
   TOKEN_SQR,
   TOKEN_SIN,
@@ -634,9 +662,11 @@ enum {
   TOKEN_MIN,
   TOKEN_LOG,
   TOKEN_LN,               //120
-  TOKEN_TAN,              
+  TOKEN_TAN,
   TOKEN_GTILE,
-  TOKEN_ITEM,             //letzter Funktions-Befehl
+  TOKEN_ITEM,
+  TOKEN_GFILE,
+  TOKEN_GCHAR,            //letzter Funktions-Befehl
   TOKEN_END
 };
 
@@ -664,7 +694,7 @@ Keyword commands[] = {
   {"EDIT", TOKEN_EDIT},
   {"ELSE", TOKEN_ELSE},
   {"END", TOKEN_STOP},
-  {"FILES", TOKEN_FILES},
+  {"FILE", TOKEN_FILE},
   {"FOR", TOKEN_FOR},
   {"GET", TOKEN_GET},
   {"GFXCLS", TOKEN_GFXCLS},
@@ -720,6 +750,7 @@ Keyword commands[] = {
   {"TROFF", TOKEN_TROFF},
   {"TRON", TOKEN_TRON},
   {"TSHEET", TOKEN_TSHEET},
+  {"TYPE", TOKEN_TYPE},
   {"UNMOUNT", TOKEN_UNMOUNT},
   {"UPDATE", TOKEN_UPDATE},
   {"USING", TOKEN_USING},
@@ -743,6 +774,8 @@ Keyword functions[] = {
   {"EXP", TOKEN_EXP},
   {"FN", TOKEN_FN},
   {"FRE", TOKEN_FRE},
+  {"GCHAR", TOKEN_GCHAR},
+  {"GFILE", TOKEN_GFILE},
   {"GPX", TOKEN_GPX},
   {"GTILE", TOKEN_GTILE},
   {"GTIME", TOKEN_GTIME},
@@ -1371,6 +1404,7 @@ void printColoredLine(char* lineText) {
 
       fbcolor(YELLOW, 0);
       while (startOfToken < txtpos) print(*startOfToken++);
+      if(cmdToken == TOKEN_FILE) {print(*startOfToken++);print(*startOfToken++);print(*startOfToken++);txtpos+=3;}  //Spezialfall FILE_OP,FILE_CL,FILE_RD,FILE_WR
       fbcolor(WHITE, 0);
       continue;
     }
@@ -1424,7 +1458,7 @@ void cmd_list() {
 
   currentIndent = 0;
   int tmp_color = windows[currentWinIdx].bcolor;          //aktuelle Hintergrundfarbe sichern
-  int tmp_txtcol= windows[currentWinIdx].fcolor;          //aktuelle Textfarbe sichern
+  int tmp_txtcol = windows[currentWinIdx].fcolor;         //aktuelle Textfarbe sichern
   fbcolor(0, 1);                                          //Hintergrund für die Listausgabe in Schwarz
 
   int zeilen = 0;
@@ -1782,6 +1816,23 @@ double factor() {
           if (*txtpos == ')') txtpos++;
           return vga.getPixel(x, y);
         }
+      case TOKEN_GCHAR:
+        spaces();
+        if (*txtpos == '(') {
+          txtpos++; // Öffnende Klammer (
+          int x = get_value();
+          if (*txtpos == ',') txtpos++;
+          int y = get_value();
+          if (*txtpos == ',') txtpos++;
+          int mod = get_value();
+          if (*txtpos == ')') txtpos++;
+          switch (mod) {
+            case 0: return uint8_t(screenBuffer[y][x]);  //Char
+            case 1: return uint8_t(colorBuffer_F[y][x]); //FColor
+            case 2: return uint8_t(colorBuffer_H[y][x]); //BColor
+            default: return 0;
+          }
+        }
       case TOKEN_GTILE:
         spaces();
         if (*txtpos == '(') {
@@ -1812,7 +1863,7 @@ double factor() {
       case TOKEN_ABS: case TOKEN_INT: case TOKEN_DEG: case TOKEN_RAD:
       case TOKEN_SGN: case TOKEN_BIN : case TOKEN_HEX : case TOKEN_OCT :
       case TOKEN_GTIME : case TOKEN_EXP: case TOKEN_LOG: case TOKEN_LN:
-      case TOKEN_TAN:
+      case TOKEN_TAN: case TOKEN_GFILE:
         spaces();
         if (*txtpos == '(') txtpos++;
         arg = get_value();
@@ -1828,7 +1879,7 @@ double factor() {
           case TOKEN_RAD: return arg * (3.14159265359 / 180.0);
           case TOKEN_DEG: return arg * (180.0 / 3.14159265359);
           case TOKEN_SGN: return (arg > 0) ? 1.0 : (arg < 0 ? -1.0 : 0.0);
-          case TOKEN_DREAD : pinMode(int(arg), INPUT_PULLUP); return (double)digitalRead(int(arg));
+          case TOKEN_DREAD : pinMode(int(arg), INPUT_PULLUP); return (double)digitalRead(int(arg)); //DREAD(PIN);
           case TOKEN_HEX: printMode = 16; return arg;
           case TOKEN_BIN: printMode = 2;  return arg;
           case TOKEN_OCT: printMode = 8;  return arg;
@@ -1837,6 +1888,10 @@ double factor() {
           case TOKEN_LOG: return log10(arg);
           case TOKEN_LN : return log(arg);
           case TOKEN_TAN: return tan(arg);
+          case TOKEN_GFILE: {
+              if (arg == 0) return File_pos;
+              else return File_size;
+            }
 
         }
         break;
@@ -2093,6 +2148,7 @@ void cmd_print() {
   int tmp_win = currentWinIdx;
   String usingFormat = "";
   bool useUsing = false;
+  double vals;
 
   while (*txtpos != '\0' && *txtpos != ':' && *txtpos != '\r' && *txtpos != '\n') {
     spaces();
@@ -2167,15 +2223,15 @@ void cmd_print() {
 
       if (printMode == 16) {
         print("H");
-        print((double)val, HEX);
+        printb((double)val, HEX);
       }
       else if (printMode == 2) {
         print("B");
-        print((double)val, BIN);
+        printb((double)val, BIN);
       }
       else if (printMode == 8) {
         print("O");
-        print((double)val, OCT);
+        printb((double)val, OCT);
       }
       else {
         if (useUsing) {
@@ -2187,13 +2243,39 @@ void cmd_print() {
           snprintf(buf, sizeof(buf), fmt.c_str(), val);
           print(buf);
         } else {
-          if (val == (long)val && val < 2147483647 && val > -2147483648) {
+          // 1. Prüfen, ob die double-Zahl rechnerisch eine Ganzzahl ist (keine Nachkommastellen hat)
+          if (fmod(val, 1.0) == 0.0) {
+            char buf[64]; 
+
+            // %.0f erzwingt die Ausgabe als reine Ganzzahl, komplett ohne Dezimalpunkt und Nullen
+            snprintf(buf, sizeof(buf), "%.0f", val);
+            print(buf);
+          }
+          // 2. Für echte Kommazahlen (z. B. 12.34)
+          else {
+            char buf[64];
+            // %.14g nutzt die hohe Präzision von double (bis zu 15 signifikante Stellen) optimal aus
+            snprintf(buf, sizeof(buf), "%.10g", val); //auf 10 geändert - bis 14 möglich
+/*
+            int len = strlen(buf);
+            if (strchr(buf, '.')) {
+              while (len > 0 && buf[len - 1] == '0') {
+                buf[--len] = '\0';
+              }
+              if (len > 0 && buf[len - 1] == '.') {
+                buf[--len] = '\0';
+              }
+            }*/
+            print(buf);
+          }
+          /*
+            if (val == (long)val && val < 2147483647 && val > -2147483648) {
             print((long)val);
-          } else {
+            } else {
             char buf[32];
             snprintf(buf, sizeof(buf), "%.10g", val);
             print(buf);
-          }
+            }*/
         }
       }
       newline = true;
@@ -2759,14 +2841,14 @@ bool compareFiles(const FileEntry& a, const FileEntry& b) {
   return an < bn;
 }
 
-void cmd_files() {
+void cmd_dir() {
   int zeilen = 0;
   spaces();
   bool tmp_cur = cursor_on_off;
   const char hi[] = "._";
   cursor_on_off = false;
   int tmp_color = windows[currentWinIdx].bcolor;          //aktuelle Hintergrundfarbe sichern
-  int tmp_txtcol= windows[currentWinIdx].fcolor;          //aktuelle Textfarbe sichern
+  int tmp_txtcol = windows[currentWinIdx].fcolor;         //aktuelle Textfarbe sichern
 
   String filter = "";
   if (*txtpos == '"' || isalpha(*txtpos)) {
@@ -2816,7 +2898,7 @@ void cmd_files() {
     print(" (Filter: *"); print(filter); println("*)");
   }
   println("----------------------------------------");
-for (const auto& f : fileList) {
+  for (const auto& f : fileList) {
     int aktuelles_limit = windows[currentWinIdx].h - 10;//(root.name()[0] == '/' && zeilen == 0 && fileList.size() > 20) ? (MAX_R - 12) : (MAX_R - 10);
     if (aktuelles_limit < 10) aktuelles_limit = 10; // Sicherheitsanker, falls MAX_R defekt ist
 
@@ -2866,9 +2948,9 @@ for (const auto& f : fileList) {
     if (f.dt.mday < 10) print("0"); print(f.dt.mday); print(".");
     if (f.dt.mon + 1 < 10) print("0"); print(f.dt.mon + 1); print(".");
     print(f.dt.year + 1900);
-    println(); 
+    println();
 
-    zeilen++; 
+    zeilen++;
   }
 
   println("---------------------------------------");
@@ -2877,7 +2959,7 @@ for (const auto& f : fileList) {
   print("Used : "); printSmartSize(SD.usedSize());
   print("Free : "); printSmartSize(SD.totalSize() - SD.usedSize());
   print("Total: "); printSmartSize(SD.totalSize());
-  
+
   fbcolor(tmp_txtcol, 0);                                               //Farben wieder setzen
   fbcolor(tmp_color, 1);
   cursor_on_off = tmp_cur;
@@ -3605,7 +3687,7 @@ void cmd_wend() {
 //############################################################ DWRITE-Befehl ######################################################################
 void cmd_dwrite() {
   spaces();
-  int pin = (int)get_value(); // Pin Nummer (z.B. 13)
+  int pin = (int)get_value(); // Pin Nummer (z.B. 13)  //DWRITE PIN, 1/0
 
   spaces();
   if (*txtpos == ',') {
@@ -3692,9 +3774,11 @@ static int Test_char(char az)
   {
     return 1;
   }
-  txtpos++;
-  spaces();
-  return 0;
+  else {
+    txtpos++;
+    spaces();
+    return 0;
+  }
 }
 //########################################################## STIME ###############################################################################
 
@@ -3743,14 +3827,14 @@ void hexMonitor(uint8_t* startAddr, uint32_t baseAddr) {
     zeilen++;
 
     if (zeilen == MAX_R - 10) {
-      if (wait_key(1) == 27) break; 
-      
+      if (wait_key(1) == 27) break;
+
       // Sicheres Löschen und USB-Entprellung für Folgeseiten
       delay(150);
       lastUsbChar = -1;
       print("\r                                 \r");
-      
-      zeilen = 0; 
+
+      zeilen = 0;
     }
   }
 }
@@ -3770,7 +3854,7 @@ void cmd_dump() {
     offset = 0;
   } else {
     // 2. Speicher-Typ einlesen (0 oder 1)
-    mem_type = get_value(); 
+    mem_type = get_value();
     spaces();
 
     // 3. Prüfen, ob das trennende Komma folgt
@@ -3789,12 +3873,11 @@ void cmd_dump() {
   // 4. Adressen und Grenzen je nach Speicher-Typ zuweisen
   if (mem_type == 0) {
     // === MODUS 0: BASIC SPEICHER ===
-    // Ersetze 'basic_program_buffer' durch deine echte BASIC-Speichervariable
-    uint8_t* basic_start = (uint8_t*)program; 
-    
+    uint8_t* basic_start = (uint8_t*)program;
+
     baseAddr = (uint32_t)(uintptr_t)basic_start;
     targetAddr = basic_start + offset;
-    
+
   } else if (mem_type == 1) {
     // === MODUS 1: PSRAM SPEICHER ===
     if (offset <= 0x7FFFFF) { // 8MB Validierung
@@ -4332,7 +4415,7 @@ void floodFill(int x, int y, uint16_t fill_color, uint16_t target_color) {
 }
 
 
-void cmd_paint() {
+void cmd_paint() { //PAINT x,y,color
   spaces();
   print(txtpos);
   int x = (int)get_value();
@@ -4396,7 +4479,7 @@ void cmd_set_sprite() {                             // Syntax: SPRITE sprite_id,
 
 }
 //########################################################## PUT - Befehl ##############################################################################################
-void cmd_put() {
+void cmd_put() { //PUT x,y,num
   int x = (int)get_value();
   if (Test_char(',')) return;
   int y = (int)get_value();
@@ -4831,27 +4914,27 @@ void cmd_unmount() {
 }
 //########################################################## TEXT - Befehl ############################################################################################
 
-void cmd_text(){  //text x,y,textcolor, backcolor,"text",breit
-  
+void cmd_text() { //text x,y,textcolor, backcolor,"text",breit
+
   spaces();
   int x = get_value();
-  if(Test_char(',')) return;
+  if (Test_char(',')) return;
   int y = get_value();
-  if(Test_char(',')) return;
+  if (Test_char(',')) return;
   uint8_t fc = get_value();
-  if(Test_char(',')) return;
+  if (Test_char(',')) return;
   uint8_t bc = get_value();
-  if(Test_char(',')) return;
+  if (Test_char(',')) return;
   String textstr = parseStringExpression();
-  
-  
-  
-  
-  if(Test_char(',')) return;
+
+
+
+
+  if (Test_char(',')) return;
   uint8_t w = get_value();
-  if(w > 0) vga.drawText(x, y, textstr.c_str(), fc, bc, true);
+  if (w > 0) vga.drawText(x, y, textstr.c_str(), fc, bc, true);
   else vga.drawText(x, y, textstr.c_str(), fc, bc, false);
-  
+
 }
 //#################################################################################### Hauptprogrammschleife ###########################################################################################
 void Basic_interpreter() {
@@ -4924,8 +5007,8 @@ void Basic_interpreter() {
         case TOKEN_VARS:  doVars();    break;
         case TOKEN_STOP:  isRunning = false; break;
         case TOKEN_REM:   skip_line(); break;
-        case TOKEN_FILES:
-        case TOKEN_DIR:  cmd_files(); break;
+        case TOKEN_FILE: File_Operations(); break;
+        case TOKEN_DIR:  cmd_dir(); break;
         case TOKEN_LOAD: cmd_load(); break;
         case TOKEN_SAVE: cmd_save(); break;
         case TOKEN_DELETE: cmd_delete(); break;
@@ -4977,6 +5060,7 @@ void Basic_interpreter() {
         case TOKEN_THEME: cmd_theme(); break;
         case TOKEN_TEXT: cmd_text(); break;
         case TOKEN_HELP: cmd_help(); break;
+        case TOKEN_TYPE: type_file();break;
         case TOKEN_PEN: {
             int c = (int)get_value();
             fbcolor(c, 0);
@@ -5518,7 +5602,7 @@ void cmd_edit() {
 //########################################################## Tastatur-Handling #################################################################################
 void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
   if (lastRepeatKeycode != 0) {   //verhindert weiterlaufen der Repeatfunktion, wenn sich zwei Tasten überlappen
-    lastRepeatKeycode = 0; 
+    lastRepeatKeycode = 0;
     repeatPhase = false;
   }
   // Speichern für Auto-Repeat
@@ -5533,9 +5617,9 @@ void OnPress(int unicode, uint8_t modifier, uint8_t keycode) {
 }
 
 void OnRelease(int unicode, uint8_t modifier, uint8_t keycode) {
-  if (keycode == lastRepeatKeycode) {
+  //if (keycode == lastRepeatKeycode) {
     lastRepeatKeycode = 0; // Stop Repeat
-  }
+  //}
 }
 
 void handleRepeat() {
@@ -5603,7 +5687,7 @@ void printWelcomeMessage() {
   printSpaces((80 - len1) / 2);
   printmsg(" *** TEENSY BASIC ", 0);
   print(BasicVersion);
-  printmsg(" by Zille-Soft ***", 1); 
+  printmsg(" by Zille-Soft ***", 1);
 
   // Zeile 2: "  **** Built [Datum] [Zeit] ****"
   int len2 = 14 + String(BuiltDate).length() + 1 + String(BuiltTime).length() + 5;
@@ -5673,23 +5757,27 @@ void setup() {
 
   //printWelcomeMessage();
   /*
-  printmsg(" *** TEENSY BASIC ", 0);
-  print(BasicVersion);
-  printmsg(" by Zille-Soft ***", 1);
-  printmsg("  **** Built ", 0);
-  print(BuiltDate);
-  print(" ");
-  print(BuiltTime);
-  printmsg(" ****", 1);
-  printmsg("    *** ", 0);
-  print((int)get_mem(5));
-  printmsg(" Basic Bytes free ***", 1);
-  println();
+    printmsg(" *** TEENSY BASIC ", 0);
+    print(BasicVersion);
+    printmsg(" by Zille-Soft ***", 1);
+    printmsg("  **** Built ", 0);
+    print(BuiltDate);
+    print(" ");
+    print(BuiltTime);
+    printmsg(" ****", 1);
+    printmsg("    *** ", 0);
+    print((int)get_mem(5));
+    printmsg(" Basic Bytes free ***", 1);
+    println();
   */
   if (!SD.begin(chipSelect)) {
     syntaxerror(sderrormsg);
   }
-  else println(mountmsg);
+  else {
+    println(mountmsg);
+    //sd_pfad[0] = '/';                                         //setze Root-Verzeichnis
+    //sd_pfad[1] = 0;
+  }
   if (external_psram_size > 0) {
     print("PSRAM found:");
     print(external_psram_size);
@@ -5697,6 +5785,7 @@ void setup() {
   } else {
     println("no PSRAM found!");
   }
+
 }
 
 void loop() {
@@ -5714,7 +5803,7 @@ void show_multiboot_menu() {
 
   cmd_cls();              // lösche Bildschirm und starte ganz oben
   cursor_on_off = false;
-  drawCursor(false); 
+  drawCursor(false);
   printmsg("\n*** TEENSY 4.1 MULTIBOOT SELECTION ***", 1);
   printmsg("           Scanning SD-Card...\n", 1);
   delay(100);
@@ -5760,7 +5849,7 @@ void show_multiboot_menu() {
   bool redraw = true;
   bool running = true;
 
-while (running) {
+  while (running) {
     if (redraw) {
       x_pos = menu_start_x;
       y_pos = menu_start_y;
@@ -5768,18 +5857,18 @@ while (running) {
       for (int i = 0; i < file_count; i++) {
         if (i == selected) {
           // --- AKTIVER EINTRAG: ANDERE FARBE + KLAMMERN ---
-          fbcolor(ORANGE, 0); 
+          fbcolor(ORANGE, 0);
           String line = " > [ " + hex_files[i] + " ]  ";
           printmsg((char*)line.c_str(), 1);
         } else {
           // --- INAKTIVER EINTRAG: STANDARD ---
-          fbcolor(WHITE, 0); 
-          
+          fbcolor(WHITE, 0);
+
           String line = "   " + hex_files[i] + "    ";
           printmsg((char*)line.c_str(), 1);
         }
       }
-      fbcolor(WHITE, 0); 
+      fbcolor(WHITE, 0);
       redraw = false;
     }
 
@@ -5823,24 +5912,34 @@ void listThemes() {
   }
 }
 
-void cmd_theme(){
+void cmd_theme() {
   spaces();
-  if(*txtpos == ':' || *txtpos =='\0') {listThemes(); return;}
-  if(*txtpos == 'S') {txtpos++; saveTheme(TOTAL_THEMES - 1); return;}
+  if (*txtpos == ':' || *txtpos == '\0') {
+    listThemes();
+    return;
+  }
+  if (*txtpos == 'S') {
+    txtpos++;
+    saveTheme(TOTAL_THEMES - 1);
+    return;
+  }
   int th = get_value();
-  if((th < (TOTAL_THEMES)) && (th > -1)) {applyTheme(th); return;}
+  if ((th < (TOTAL_THEMES)) && (th > -1)) {
+    applyTheme(th);
+    return;
+  }
 }
 
 
 void applyTheme(int index) {
   if (index >= 0 && index < TOTAL_THEMES) {
     currentThemeIndex = index;
-    if(currentThemeIndex == TOTAL_THEMES - 1){
+    if (currentThemeIndex == TOTAL_THEMES - 1) {
       windows[currentWinIdx].fcolor = EEPROM.read(EEPROM_THEME_ADDR + 1);
       windows[currentWinIdx].bcolor = EEPROM.read(EEPROM_THEME_ADDR + 2);
     } else {
-    windows[currentWinIdx].fcolor = themes[index].textColor;
-    windows[currentWinIdx].bcolor = themes[index].bgColor;
+      windows[currentWinIdx].fcolor = themes[index].textColor;
+      windows[currentWinIdx].bcolor = themes[index].bgColor;
     }
     cmd_cls();
     printWelcomeMessage();
@@ -5849,15 +5948,15 @@ void applyTheme(int index) {
 
 
 void saveTheme(int index) {
-  EEPROM.update(EEPROM_THEME_ADDR, index); 
-  if(index == TOTAL_THEMES - 1){
+  EEPROM.update(EEPROM_THEME_ADDR, index);
+  if (index == TOTAL_THEMES - 1) {
     themes[TOTAL_THEMES - 1].textColor = windows[currentWinIdx].fcolor;
     themes[TOTAL_THEMES - 1].bgColor   = windows[currentWinIdx].bcolor;
     EEPROM.update(EEPROM_THEME_ADDR + 1, windows[currentWinIdx].fcolor);
     EEPROM.update(EEPROM_THEME_ADDR + 2, windows[currentWinIdx].bcolor);
   }
   applyTheme(index);
-  EEPROM.update(EEPROM_THEME_ADDR, index); 
+  EEPROM.update(EEPROM_THEME_ADDR, index);
   printmsg("Theme saved!", 1);
 }
 
@@ -5865,15 +5964,15 @@ void saveTheme(int index) {
 void loadSavedTheme() {
   int savedIndex = EEPROM.read(EEPROM_THEME_ADDR);
   if (savedIndex >= 0 && savedIndex < TOTAL_THEMES) {
-    
+
     if (savedIndex == TOTAL_THEMES - 1) {
       themes[TOTAL_THEMES - 1].textColor = EEPROM.read(EEPROM_THEME_ADDR + 1);
       themes[TOTAL_THEMES - 1].bgColor   = EEPROM.read(EEPROM_THEME_ADDR + 2);
     }
-    
+
     applyTheme(savedIndex);
   } else {
     applyTheme(0); // Fallback auf Standard, falls EEPROM leer war
   }
-  
+
 }

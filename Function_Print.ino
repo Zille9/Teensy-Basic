@@ -67,9 +67,9 @@ void println(String s)       {
   println(s.c_str());
 }
 
-void print(long n, int base) {
+void printb(long n, int base) {
   char buf[33]; // Genug Platz für 32 Bits (BIN) + Null-Terminator
-  ltoa(n, buf, base);
+  ltoa((unsigned long)n, buf, base);
 
   // Bei Hexadezimal sieht es in Großbuchstaben (C64-Style) besser aus
   if (base == 16) {

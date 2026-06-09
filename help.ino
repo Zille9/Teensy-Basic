@@ -5,8 +5,8 @@ const char h_PRINT[]            PROGMEM = "PRINT Value, String...\rEXAMPLE: PRIN
 const char h_GOTO[]             PROGMEM = "GOTO Linenumber\rEXAMPLE: GOTO 230";
 const char h_LIST[]             PROGMEM = "LIST <from Line, to Line>\rEXAMPLE :LIST 10,100";
 const char h_RUN[]              PROGMEM = "Start the Programm\rRUN'/FILENAME' starts the filename";
-const char h_VARIABLE[]         PROGMEM = " ";        // A-Z
-const char h_NUMBER[]           PROGMEM = " ";           //Zahlen
+const char h_VARIABLE[]         PROGMEM = " ";   // A-Z
+const char h_NUMBER[]           PROGMEM = " ";   //Zahlen
 const char h_STRING_LITERAL[]   PROGMEM = " ";   //Strings
 const char h_NEW[]              PROGMEM = "Delete Program and clears the Variables";
 const char h_FOR[]              PROGMEM = "FOR Var=Start to End-Condition\rEXAMPLE: FOR I=0 TO 25 STEP 2:PRINT I:NEXT I";
@@ -18,7 +18,7 @@ const char h_INPUT[]            PROGMEM = "NPUT Inputtext;var,var$...\rEXAMPLE: 
 const char h_DATA[]             PROGMEM = "DATA Lines with Numbers or Text";
 const char h_READ[]             PROGMEM = "READ Var,Strings - reads Datalines\rEXAMPLE: READ A,N$,B";                                                         //20
 const char h_RESTORE[]          PROGMEM = "RESTORE resets the Data-Pointer\rRESTORE lnr - set the Data-Pointer on Line->lnr";
-const char h_FILES[]            PROGMEM = "Shows the Directory of SD-Card\rDIR'BAS'\rShows only Files with the BAS-Extension";
+const char h_FILE[]             PROGMEM = "File-Operations OPEN=_OP, READ=_RD, WRITE=_WR, POS=_PS\rEXAMPLE: FILE_OP'TEST.TXT,R or W'\r         FILE_RD A$,A,B\r         FILE_PS(100)\r         FILE_WR C$,D,E\r         FILE_CL";
 const char h_DIR[]              PROGMEM = "Shows the Directory of SD-Card\rDIR'BAS'\rShows only Files with the BAS-Extension";
 const char h_LOAD[]             PROGMEM = "LOAD Filename\rFilename in qoute or as String\rEXAMPLE: LOAD'/TEST.BAS'";
 const char h_SAVE[]             PROGMEM = "SAVE Filename\rFilename in qoute or as String";
@@ -27,11 +27,11 @@ const char h_DIM[]              PROGMEM = "DIM Var(dim,dim,dim)\rdimensioned arr
 const char h_GOSUB[]            PROGMEM = "GOSUB Linenumber\rEXAMPLE :500 GOSUB 700\r         700 PRINT A\r         710 RETURN";
 const char h_RETURN[]           PROGMEM = "GOSUB Linenumber\rEXAMPLE :500 GOSUB 700\r         700 PRINT A\r         710 RETURN";
 const char h_ELSE[]             PROGMEM = "alternative condition on IF THEN\rmust be in next line";                                                           //30
-const char h_WHILE[]            PROGMEM = "";
-const char h_WEND[]             PROGMEM = "";
+const char h_WHILE[]            PROGMEM = "WHILE(condition)\rrepeats a block of code as long as a defined condition is true\rEXAMPLE :500 WHILE(a<5)\r         510  a=a+1\r         520 PRINT A\r         530 WEND";
+const char h_WEND[]             PROGMEM = "WEND closed the WHILE Block\rsee HELP WHILE";
 const char h_RENAME[]           PROGMEM = "RENAME Filename_old, Filename_new\rFilename in qoute or as String";
 const char h_COPY[]             PROGMEM = "COPY Filename_source, Filename_target\rcopy's a File";
-const char h_DWRITE[]           PROGMEM = "";
+const char h_DWRITE[]           PROGMEM = "DWRITE PIN,VAL set the status of PIN high or low\r VAL can be 0=LOW 1=HIGH";
 const char h_PAUSE[]            PROGMEM = "PAUSE ms\rPause in milliseconds";
 const char h_MEM[]              PROGMEM = "shows the Memory-usage";
 const char h_ON[]               PROGMEM = "ON Variable\rExpandet GOTO or GOSUB Command\rEXAMPLE: ON A GOTO 120,230,430";
@@ -56,15 +56,15 @@ const char h_AND[]              PROGMEM = "Logical AND Condition\rEXAMPLE: IF A>
 const char h_OR[]               PROGMEM = "Logical OR Condition\rEXAMPLE: IF A>5 OR B<6 THEN C=0";
 const char h_WINDOW[]           PROGMEM = "WINDOW(nr,x,y,xx,yy<,fcol,bcol,titlecol,Title>)\rcreates a window nr=1..5\rWINDOW without Parameters switch to Mainwindow\rWINDOW(nr) switch to Window nr\rfcol,bcol,titlecol set the colors\rTitle is the window title";
 const char h_RENUM[]            PROGMEM = "RENUM the program-linenumbers\rRENUM start,step - renumbers with start and stepwise";
-const char h_USING[]            PROGMEM = "";            //60
+const char h_USING[]            PROGMEM = "PRINT USING '###.##', VAR\rdefined the number of decimal places";            //60
 const char h_SID[]              PROGMEM = "";       
-const char h_POS[]              PROGMEM = "";
-const char h_PAINT[]            PROGMEM = "";
-const char h_GET[]              PROGMEM = "";
-const char h_PUT[]              PROGMEM = "";
-const char h_UPDATE[]           PROGMEM = "";
-const char h_HIDE[]             PROGMEM = "";
-const char h_GFXCLS[]           PROGMEM = "";
+const char h_POS[]              PROGMEM = "Set the Cursor on Position x,y\rEXAMPLE: POS 2,5";
+const char h_PAINT[]            PROGMEM = "PAINT x,y,color\rfills an area from x,y with color";
+const char h_GET[]              PROGMEM = "GET x,y,id\rgrabbing 16x16 Pixel Block from Position x,y\rand saved as Sprite-Nr id";
+const char h_PUT[]              PROGMEM = "PUT x,y,id\rputs the Sprite id on Position x,y";
+const char h_UPDATE[]           PROGMEM = "UPDATE\rupdated the GFX-Screen with all Sprites";
+const char h_HIDE[]             PROGMEM = "HIDE id\rhides the Sprite number id";
+const char h_GFXCLS[]           PROGMEM = "GFXCLS - clears the GFX-Screen\rGFXCLS c clears the GFX-Screen with c-Color";
 const char h_SPLOAD[]           PROGMEM = "";
 const char h_TDRAW[]            PROGMEM = "";             //70
 const char h_SPRITE[]           PROGMEM = "";
@@ -89,7 +89,46 @@ const char h_SQR[]              PROGMEM = "SQR(Value)\rthe square root of Value"
 const char h_SIN[]              PROGMEM = "SIN(Value)\rreturns the Sinus in RAD";
 const char h_COS[]              PROGMEM = "COS(Value)\rreturns the Cosinus in Rad";
 const char h_ABS[]              PROGMEM = "ABS(Value)\rreturns the Absolut-Value";
-
+const char h_INT[]              PROGMEM = "INT(Value)\rEXAMPLE: PRINT INT(81.23) ->81";
+const char h_PI[]               PROGMEM = "A=PI() = circular number pi";
+const char h_DEG[]              PROGMEM = "DEG(0.7854)\rConvert angle values in degrees.";
+const char h_RAD[]              PROGMEM = "RAD(45)\rConvert angle values ​​in radians.";             //90
+const char h_SGN[]              PROGMEM = "SGN(Value)\rEXAMPLE: A=SGN(-3)\rReturns: SGN(x) x>0=1 x=0->0 x<0=-1";
+const char h_LEN[]              PROGMEM = "LEN(Val$)\rEXAMPLE: A=LEN(A$)\rreturns the Length of A$";
+const char h_ASC[]              PROGMEM = "ASC(CHAR)\rEXAMPLE: PRINT ASC(char)\rreturns the ASCII Code of char\rchar must be in quotes";
+const char h_VAL[]              PROGMEM = "VAL(A$)\rEXAMPLE: PRINT 5+VAL(A$)\rconverts A$ to a numeric Value\ronly Numbers in A$ allowed";
+const char h_DREAD[]            PROGMEM = "DREAD(PIN) read the status of a digital-Pin\rEXAMPLE: A=DREAD(23)";
+const char h_FRE[]              PROGMEM = "FRE(x) returns free and used Ram\r1-usedlines 2-freelines 3-totalRam 4-usedRam 5-freeBytes";
+const char h_TIMER[]            PROGMEM = "TIMER\rEXAMPLE: A=TIMER\rreturns the millis since TEENSY-start";
+const char h_LEFT[]             PROGMEM = "LEFT$(String$,n)\rEXAMPLE: PRINT LEFT$(A$,4)\rPrints the left 4 chars of A$";
+const char h_RIGHT[]            PROGMEM = "RIGHT$(String$,n)\rEXAMPLE: PRINT RIGHT$(A$,4)\rPrints the right 4 chars of A$";
+const char h_MID[]              PROGMEM = "MID$(String$,start,n)\rEXAMPLE: PRINT MID$(A$,4,3)\rPrints 3 chars of A$ starting at 4";              //100
+const char h_SPC[]              PROGMEM = "SPC(Val)\rEXAMPLE: PRINT SPC(5)\rPrint 5 Spaces";
+const char h_STR[]              PROGMEM = "STR$(Val,n)\rEXAMPLE: A$=STR$(-15.34,2)\rConverts Val to String with\rn numbers of decimal places";
+const char h_CHR[]              PROGMEM = "CHR$(Val)\rEXAMPLE: PRINT CHR$(65)->A";
+const char h_BIN[]              PROGMEM = "BIN(Val)\rEXAMPLE: PRINT BIN(81)->%1010001";
+const char h_HEX[]              PROGMEM = "HEX(Val)\rEXAMPLE: PRINT HEX(81)->&H51";
+const char h_OCT[]              PROGMEM = "OCT(VAL)\rEXAMPLE: Print OCT(81)->O121";
+const char h_GTIME[]            PROGMEM = "GTIME(Val)\rEXAMPLE: A=GTIME(1)\rReturn Hour from Time-Array\r1=Hour, 2=Minute, 3=Second, 4=Day, 5=Month, 6=Year, 7=Day of week";
+const char h_TIME[]             PROGMEM = "Return the TIME$ String\rEXAMPLE: PRINT TIME$:T$=TIME$";
+const char h_DATE[]             PROGMEM = "Return the DATE$ String\rEXAMPLE: PRINT DATE$:D$=DATE$";
+const char h_FN[]               PROGMEM = "DEFN Var=(Function)\rCreate User-Function\rEXAMPLE: DEFN A(A,B)=(SIN(A)*COS(B))\r         c=FN A(12,5)";               //110
+const char h_INKEY[]            PROGMEM = "INKEY\rEXAMPLE: A=INKEY\rA=last Keypress";
+const char h_STRING[]           PROGMEM = "STRING$(n,String)\rrepeats the string n times\rEXAMPLE: PRINT STRING$(23,'-')\rString must be in quotes";
+const char h_EXP[]              PROGMEM = "EXP(Val)\rEXAMPLE: PRINT EXP(1) ->2.718282";
+const char h_GPX[]              PROGMEM = "GPX(x,y) returns the color of the Pixel on x,y\rEXAMPLE: PRINT GPX(100,150)";
+const char h_MAP[]              PROGMEM = "A=MAP(x,old_min,old_max,new_min,new_max)\rRe-maps a number from one range to another\rx is the Number to map";
+const char h_CONSTRAIN[]        PROGMEM = "A=CONS(x,min,max)\rConstrains a number to be within a range\rx is the Number to Constrain";
+const char h_MAX[]              PROGMEM = "MAX(Value1,Value2)\rEXAMPLE: PRINT MAX(81,23) ->81";
+const char h_MIN[]              PROGMEM = "MIN(Val1,Val2)\rEXAMPLE: PRINT MIN(81,23) ->23";
+const char h_LOG[]              PROGMEM = "LOG(Value)\rEXAMPLE: A=LOG(35)";
+const char h_LN[]               PROGMEM = "A=LN(val) = natural Log.\rval must be greater as -1";               //120
+const char h_TAN[]              PROGMEM = "TAN(Value)\rEXAMPLE: A=TAN(45)\rreturns the Tangens in RAD";
+const char h_GTILE[]            PROGMEM = "";
+const char h_ITEM[]             PROGMEM = "";             
+const char h_GFILE[]            PROGMEM = "GFILE returns the Fileposition (0) or the Filesize (1)\rEXAMPLE: PRINT'The Fileposition is: ';GFILE(0)\r         PRINT'Filesize is: 'GFILE(1);' Bytes'";  //letzter Funktions-Befehl
+const char h_GCHAR[]            PROGMEM = "GCHAR(x,y,m) with mode m returns the\rAscii-value(0)\rfcolor(1)\rbcolor(2) on Position x,y\rEXAMPLE: PRINT Chr$(GCHAR(10,10,0))\rprints the Char on Pos x,y (if exist)";
+const char h_TYPE[]             PROGMEM = "TYPE'Filename' displays the contents of the file on the screen\rEXAMPLE: TYPE'TEST.TXT'";
 // 2. Struktur für die Zuordnung von Token zu Text
 struct CommandDetails {
   uint8_t token;
@@ -119,7 +158,7 @@ const CommandDetails cdetail_table[] = {
   {TOKEN_DATA,h_DATA},
   {TOKEN_READ,h_READ},             //20
   {TOKEN_RESTORE,h_RESTORE},
-  {TOKEN_FILES,h_FILES},
+  {TOKEN_FILE,h_FILE},
   {TOKEN_DIR,h_DIR},
   {TOKEN_LOAD,h_LOAD},
   {TOKEN_SAVE,h_SAVE},
@@ -181,15 +220,53 @@ const CommandDetails cdetail_table[] = {
   {TOKEN_UNMOUNT,h_UNMOUNT},   
   {TOKEN_THEME,h_THEME},
   {TOKEN_TEXT,h_TEXT},
-  {TOKEN_HELP,h_HELP},      //letzter Basic-Befehl
+  {TOKEN_HELP,h_HELP},      
+  {TOKEN_TYPE, h_TYPE},     //letzter Basic-Befehl
 //******************************************************  
   {TOKEN_RND, h_RND},       //erster Funktionsbefehl
   {TOKEN_SQR, h_SQR},
   {TOKEN_SIN, h_SIN},
   {TOKEN_COS, h_COS},
   {TOKEN_ABS, h_ABS},
-
-  
+  {TOKEN_INT, h_INT},
+  {TOKEN_PI, h_PI},
+  {TOKEN_DEG, h_DEG},
+  {TOKEN_RAD, h_RAD},             //90
+  {TOKEN_SGN, h_SGN},
+  {TOKEN_LEN, h_LEN},
+  {TOKEN_ASC, h_ASC},
+  {TOKEN_VAL, h_VAL},
+  {TOKEN_DREAD,h_DREAD},
+  {TOKEN_FRE,h_FRE},
+  {TOKEN_TIMER,h_TIMER},
+  {TOKEN_LEFT,h_LEFT},
+  {TOKEN_RIGHT,h_RIGHT},
+  {TOKEN_MID, h_MID},              //100
+  {TOKEN_SPC, h_SPC},
+  {TOKEN_STR, h_STR},
+  {TOKEN_CHR, h_CHR},
+  {TOKEN_BIN, h_BIN},
+  {TOKEN_HEX, h_HEX},
+  {TOKEN_OCT, h_OCT},
+  {TOKEN_GTIME, h_GTIME},
+  {TOKEN_TIME, h_TIME},
+  {TOKEN_DATE, h_DATE},
+  {TOKEN_FN, h_FN},              //110
+  {TOKEN_INKEY, h_INKEY},
+  {TOKEN_STRING,h_STRING},
+  {TOKEN_EXP, h_EXP},
+  {TOKEN_GPX, h_GPX},
+  {TOKEN_MAP, h_MAP},
+  {TOKEN_CONSTRAIN,h_CONSTRAIN},
+  {TOKEN_MAX,h_MAX},
+  {TOKEN_MIN,h_MIN},
+  {TOKEN_LOG,h_LOG},
+  {TOKEN_LN, h_LN},               //120
+  {TOKEN_TAN,h_TAN},
+  {TOKEN_GTILE,h_GTILE},
+  {TOKEN_ITEM, h_ITEM},             
+  {TOKEN_GFILE, h_GFILE},
+  {TOKEN_GCHAR, h_GCHAR},         //letzter Funktionsbefehl
   {0, NULL}
 };
 
