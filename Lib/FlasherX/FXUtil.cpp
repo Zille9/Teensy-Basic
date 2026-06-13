@@ -69,7 +69,7 @@ void update_firmware( Stream *in, Stream *out,
     }
     else if (hex.code == 0) { // if data record
       uint32_t addr = buffer_addr + hex.base + hex.addr - FLASH_BASE_ADDR;
-      if (hex.max > 0x60800000){ //(FLASH_BASE_ADDR + buffer_size)) {
+      if (hex.max > (FLASH_BASE_ADDR + buffer_size)) {
         out->printf( "abort - max address %08lX too large\n", hex.max );
         return;
       }
